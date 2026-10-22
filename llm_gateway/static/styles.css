@@ -141,9 +141,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; }
 .model .name { font-weight: 700; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .model .id { font-family: var(--mono); font-size: .8rem; color: var(--muted); font-weight: 400; }
 .tag { font-size: .72rem; font-weight: 600; border-radius: 999px; padding: 1px 8px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
-.tag.on { background: var(--accent-soft); color: var(--accent); }
-.tag.on-cpu { background: var(--warn-soft); color: var(--warn); }
-.model .facts { grid-column: 1; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .84rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tag.on { background: var(--accent-soft); color: var(--accent); }.model .facts { grid-column: 1; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .84rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .model .facts b { color: var(--fg); font-weight: 600; }
 .model .notes { grid-column: 1 / -1; font-size: .84rem; color: var(--muted); }
 .model details.more { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 6px; font-size: .84rem; }
