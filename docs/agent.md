@@ -102,6 +102,11 @@ These guards wrap the whole loop:
 
 - **Announced but not done** (`errors.announces_unfinished_work`). Small models often end with
   "Let me fix this now." and no tool call. The loop answers "Go ahead", at most twice per turn.
+  It does not when the reply asks the user a question.
+- **Failed, not broken.** A command that runs but exits non-zero returns `ToolOutput(text, ok=False)`.
+  The model sees the output, the UI shows ✗, and the circuit breaker does not count it.
+- **Timeouts.** `bash` takes a `timeout` of up to 30 minutes. Network git commands get 15 minutes.
+  A timed-out command reports that it may have left a `.git/*.lock` file behind.
 - **Step budget** (`max_steps`).
 - **Loop detector.** A repeated identical call gets a warning; the third one stops the turn.
 - **Circuit breaker.**
@@ -185,6 +190,12 @@ flowchart LR
 
   On Windows, the host folder is mounted through Docker Desktop's
   `/run/desktop/mnt/host/<drive>/...` (`agent.k8s.host_mount_prefix`).
+- **The mounted folder is slow for many small files.** On Windows, Docker Desktop shares the drive
+  through a file-sharing layer. A shallow clone of a large repository (20,000 files) took 297 s into
+  `/agent/workspace` and 34 s into the pod's own `/tmp`.
+  - So pod agents get `/tmp` as a scratch folder (`agent.scratch_dir`). The file tools may use it, and
+    the system prompt tells the model to clone and unpack big things there.
+  - Keep in the workspace only what the user should keep.
 - **Not covered:** Docker Desktop does not enforce NetworkPolicies, so a pod can reach anything on
   the network. Restrict egress with a CNI that enforces policies if that matters.
 

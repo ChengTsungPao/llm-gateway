@@ -107,6 +107,9 @@ class Compactor:
         """Return (body, info). `info` is None when nothing had to change."""
         messages = body.get("messages") or []
         reply = int(body.get("max_tokens") or body.get("max_completion_tokens") or DEFAULT_REPLY)
+        # Room for the answer, but at most a quarter of the window: clients like Claude Code ask for
+        # max_tokens 32000 by default, which would otherwise leave no room for the prompt at all.
+        reply = min(reply, context // 4)
         budget = max(512, context - reply)
         before = estimate(messages)
         if before <= budget * TRIGGER:
@@ -126,6 +129,10 @@ class Compactor:
                 break
             recent.insert(0, m)
             used += cost
+        # A tool result must stay right after the assistant message that called the tool, so never
+        # start the kept part on one: chat templates reject a result whose call was summarized away.
+        while recent and recent[0].get("role") == "tool":
+            recent.pop(0)
         old = rest[: len(rest) - len(recent)]
 
         # The newest message alone is too big: summarize its body too, keep it as the question.

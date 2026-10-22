@@ -275,6 +275,14 @@ class PodHost:
     async def update(self, agent_id: str, changes: dict) -> dict:
         if "workspace" in changes:
             raise HostError(400, "In Kubernetes mode each agent works in its own folder; it cannot be changed.")
+        self._exists(agent_id)
+        if set(changes) == {"title"} and not (self.started and await self.pods.status(agent_id) == "ready"):
+            # renaming a stopped agent: edit its checkpoint instead of starting a pod for it
+            store = self._store(agent_id)
+            s = store.load(agent_id)
+            s.title = str(changes["title"]).strip()[:120] or s.title
+            store.save(s)
+            return await self.get(agent_id)
         return self._with_folder(await self._call("PATCH", agent_id, "/session", changes), agent_id)
 
     async def start_turn(self, agent_id: str, prompt: str) -> None:

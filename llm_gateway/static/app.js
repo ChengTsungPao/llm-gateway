@@ -218,11 +218,45 @@ function newConv() {
 function renderConvs() {
   $("#convList").innerHTML = convs.map((c) => `<li class="${c.id === currentId ? "on" : ""}">
     <button type="button" class="title" data-open="${c.id}">${esc(c.title)}</button>
+    <button type="button" class="ren" data-rename="${c.id}" aria-label="Rename">✎</button>
     <button type="button" class="del" data-del="${c.id}" aria-label="Delete">✕</button></li>`).join("");
+}
+// Rename in place (chat and agent lists): the title becomes a text box; Enter or tapping elsewhere
+// saves, Esc cancels.
+function inlineRename(li, current, save) {
+  const btn = li.querySelector(".title");
+  const input = document.createElement("input");
+  input.className = "rename";
+  input.value = current;
+  input.maxLength = 120;
+  input.setAttribute("aria-label", "New name");
+  btn.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = async (keep) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    if (keep && name && name !== current) {
+      try { await save(name); return; } catch (e) { banner(e.message); }
+    }
+    input.replaceWith(btn);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); finish(true); }
+    if (e.key === "Escape") { e.stopPropagation(); finish(false); }   // don't also close the drawer
+  });
+  input.addEventListener("blur", () => finish(true));
 }
 $("#convList").addEventListener("click", (e) => {
   const open = e.target.closest("[data-open]")?.dataset.open;
   const del = e.target.closest("[data-del]")?.dataset.del;
+  const ren = e.target.closest("[data-rename]")?.dataset.rename;
+  if (ren) {
+    const c = convs.find((x) => x.id === ren);
+    if (c) inlineRename(e.target.closest("li"), c.title, (name) => { c.title = name; saveConvs(); renderConvs(); });
+    return;
+  }
   if (open) { currentId = open; const c = current(); if (c?.model && prof(c.model)) $("#chatModel").value = c.model; saveConvs(); renderConvs(); renderMessages(); renderChatHead(); setConvsOpen(false); }
   if (del) { convs = convs.filter((c) => c.id !== del); if (currentId === del) currentId = convs[0]?.id || null; saveConvs(); renderConvs(); renderMessages(); }
 });

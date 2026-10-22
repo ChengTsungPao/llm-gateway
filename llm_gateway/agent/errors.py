@@ -103,6 +103,8 @@ def announces_unfinished_work(text: str) -> bool:
     """Small models often end a reply with "Let me fix this now." and no tool call. Detect a
     final sentence that announces an action, so the loop can tell the model to go ahead."""
     tail = text.strip()[-300:]
+    if "?" in tail or "？" in tail:     # it asked the user something: wait for the answer
+        return False
     return bool(tail) and bool(_INTENT.search(tail))
 
 

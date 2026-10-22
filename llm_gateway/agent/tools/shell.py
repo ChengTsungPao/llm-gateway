@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from ..errors import ToolError
-from .base import Risk, Tool, ToolContext, truncate
+from .base import Risk, Tool, ToolContext, ToolOutput, truncate
 
 
 def detect_shell() -> list[str]:
@@ -61,8 +61,9 @@ async def run_shell(shell: list[str], command: str, cwd: Path, timeout_s: float,
         _kill_tree(proc)
         await proc.wait()
         # side_effect: the command ran for a while and may have changed things before it was killed
-        raise ToolError("timeout", f"command did not finish within {timeout_s:.0f}s and was stopped.",
-                        side_effect=True) from None
+        raise ToolError("timeout", f"command did not finish within {timeout_s:.0f}s and was stopped. If it needs "
+                        "longer, run it again with a larger timeout. A stopped git command can leave a "
+                        "*.lock file in .git that must be removed first.", side_effect=True) from None
     except asyncio.CancelledError:
         _kill_tree(proc)
         raise
@@ -74,7 +75,8 @@ class Bash(Tool):
     risk = Risk.EXEC
     parameters = {"type": "object", "properties": {
         "command": {"type": "string", "description": "The command to run."},
-        "timeout": {"type": "integer", "description": "Seconds before the command is stopped. Default 120, max 600."},
+        "timeout": {"type": "integer", "description": "Seconds before the command is stopped. Default 120, max 1800. "
+                                                  "Give long jobs (git clone, npm install, builds) 600 or more."},
     }, "required": ["command"]}
 
     def __init__(self, shell: list[str]):
@@ -82,13 +84,14 @@ class Bash(Tool):
             f"Run a command in {shell_name(shell)} in the workspace directory, e.g. tests, builds, package "
             "managers. Returns the output and exit code. Each call starts a fresh shell (no state is kept). "
             "Do not use it to read, search or edit files: use read_file, grep, glob, edit_file. "
-            "Never run commands that wait for input.")
+            "Never run commands that wait for input. Downloads and installs can take minutes: set timeout.")
 
     def summary(self, args: dict) -> str:
         return f"$ {args.get('command', '')}"
 
     async def run(self, args: dict, ctx: ToolContext) -> str:
-        timeout = min(max(args.get("timeout") or 120, 1), 600)
-        code, out = await run_shell(ctx.shell, args["command"], ctx.workspace, timeout)
+        timeout = min(max(args.get("timeout") or 120, 1), 1800)
+        # GIT_TERMINAL_PROMPT=0: a git command that wants a password fails at once instead of hanging
+        code, out = await run_shell(ctx.shell, args["command"], ctx.workspace, timeout, env={"GIT_TERMINAL_PROMPT": "0"})
         out = truncate(out.rstrip(), ctx.max_output_chars) or "(no output)"
-        return f"{out}\n[exit code {code}]"
+        return ToolOutput(f"{out}\n[exit code {code}]", ok=code == 0)

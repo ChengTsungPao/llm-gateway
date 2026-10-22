@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import shutil
 import subprocess
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,6 +28,12 @@ from .backends import BackendError, evict_ollama, make_backend
 from .compaction import Compactor
 from .config import Config
 from .manager import ModelBusy, ModelManager
+from .protocols import anthropic, responses
+from .protocols.stream import events as stream_events
+from .protocols.stream import prompt_size, sse, with_heartbeat
+
+# uvicorn's own logger, so these lines appear in the gateway log next to the request lines
+log = logging.getLogger("uvicorn.error")
 
 STATIC = Path(__file__).parent / "static"
 
@@ -93,7 +101,8 @@ def create_app(cfg: Config) -> FastAPI:
         if not cfg.api_key:
             return
         auth = request.headers.get("authorization", "")
-        if auth != f"Bearer {cfg.api_key}":
+        # Claude Code sends the key as x-api-key when ANTHROPIC_API_KEY is used
+        if auth != f"Bearer {cfg.api_key}" and request.headers.get("x-api-key") != cfg.api_key:
             raise HTTPException(401, "missing or wrong API key (Authorization: Bearer <key>)")
 
     def profile_or_404(profile_id: str):
@@ -204,6 +213,108 @@ def create_app(cfg: Config) -> FastAPI:
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    # ── Anthropic Messages (Claude Code) and OpenAI Responses (Codex) ─────
+    # Each request is translated to Chat Completions (protocols/), runs through the same model
+    # switching, compaction and backends as /v1/chat/completions, and is translated back.
+
+    def protocol_profile(model: str | None):
+        """The named profile; otherwise the loaded model. Claude Code sends side requests (titles,
+        summaries) for its own model names; those should not force a model switch."""
+        return cfg.profile(model or "") or (cfg.profile(manager.active_id) if manager.active_id else None)
+
+    async def run_chat(profile, chat: dict) -> dict:
+        async with manager.use(profile.id) as backend:
+            chat, _ = await fit_context(backend, profile, chat)
+            return await backend.chat(chat)
+
+    async def stream_chat(profile, chat: dict) -> AsyncIterator[bytes]:
+        async with manager.use(profile.id) as backend:
+            chat, _ = await fit_context(backend, profile, dict(chat, stream=True))
+            async for piece in backend.chat_stream(chat):
+                yield piece
+
+    sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    model_list = ", ".join(p.id for p in cfg.profiles if p.tools) or ", ".join(p.id for p in cfg.profiles)
+
+    def anthropic_error(status: int, kind: str, message: str) -> JSONResponse:
+        return JSONResponse(anthropic.error_body(kind, message), status_code=status)
+
+    @app.post("/v1/messages", dependencies=[Depends(require_key)])
+    async def messages(body: dict):
+        profile = protocol_profile(body.get("model"))
+        if profile is None:
+            return anthropic_error(404, "not_found_error", f"unknown model '{body.get('model')}'. "
+                                   f"Set ANTHROPIC_MODEL to one of: {model_list}")
+        chat = anthropic.to_chat(body, profile.id)
+        size = prompt_size(chat)
+        log.info("anthropic /v1/messages model=%s ~%d prompt tokens, %d messages, %d tools, stream=%s",
+                 profile.id, size, len(chat["messages"]), len(chat.get("tools", [])), bool(body.get("stream")))
+        try:
+            manager.check_can_use(profile.id)
+        except ModelBusy as e:
+            return anthropic_error(529, "overloaded_error", str(e))    # Claude Code retries 529
+        if not body.get("stream"):
+            try:
+                return anthropic.from_chat(await run_chat(profile, chat), profile.id, size)
+            except ModelBusy as e:
+                return anthropic_error(529, "overloaded_error", str(e))
+            except BackendError as e:
+                return anthropic_error(500, "api_error", str(e))
+
+        async def gen():
+            yield anthropic.message_start(profile.id, size)       # at once, even while the model loads
+            try:
+                frames = anthropic.stream(stream_events(stream_chat(profile, chat)), size)
+                async for frame in with_heartbeat(frames, anthropic.PING):
+                    yield frame
+            except (BackendError, ModelBusy) as e:
+                kind = "overloaded_error" if isinstance(e, ModelBusy) else "api_error"
+                yield sse("error", anthropic.error_body(kind, str(e)))
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=sse_headers)
+
+    @app.post("/v1/messages/count_tokens", dependencies=[Depends(require_key)])
+    async def count_tokens(body: dict):
+        return {"input_tokens": prompt_size(anthropic.to_chat(body, ""))}
+
+    @app.post("/v1/responses", dependencies=[Depends(require_key)])
+    async def responses_api(body: dict):
+        if body.get("previous_response_id"):
+            raise HTTPException(400, "previous_response_id is not supported: send the full input (store=false)")
+        profile = protocol_profile(body.get("model"))
+        if profile is None:
+            raise HTTPException(404, f"unknown model '{body.get('model')}'. Use one of: {model_list}")
+        chat = responses.to_chat(body, profile.id)
+        kinds = responses.tool_kinds(body)
+        size = prompt_size(chat)
+        log.info("responses /v1/responses model=%s ~%d prompt tokens, %d items, %d tools, stream=%s",
+                 profile.id, size, len(body.get("input") or []), len(chat.get("tools", [])), bool(body.get("stream")))
+        try:
+            manager.check_can_use(profile.id)
+        except ModelBusy as e:
+            raise HTTPException(409, str(e)) from e
+        if not body.get("stream"):
+            try:
+                return responses.from_chat(await run_chat(profile, chat), profile.id, kinds, size)
+            except ModelBusy as e:
+                raise HTTPException(409, str(e)) from e
+            except BackendError as e:
+                raise HTTPException(502, str(e)) from e
+
+        writer = responses.StreamWriter(profile.id, kinds, size)
+
+        async def gen():
+            for frame in writer.start():
+                yield frame
+            try:
+                frames = writer.stream(stream_events(stream_chat(profile, chat)))
+                async for frame in with_heartbeat(frames, responses.HEARTBEAT):
+                    yield frame
+            except (BackendError, ModelBusy) as e:
+                yield writer.failed(str(e), "model_busy" if isinstance(e, ModelBusy) else "server_error")
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=sse_headers)
+
     # ── agent ─────────────────────────────────────────────────────────────
     # The routes only talk to an AgentHost (hosting.py): agents run either in this process
     # (sandbox "local") or each in its own Kubernetes pod (sandbox "k8s").
@@ -265,7 +376,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.patch("/api/agent/sessions/{session_id}", dependencies=agent_deps)
     async def agent_update(session_id: str, payload: dict):
-        changes = {k: payload[k] for k in ("mode", "workspace", "model") if k in payload}
+        changes = {k: payload[k] for k in ("title", "mode", "workspace", "model") if k in payload}
         if "model" in changes:
             changes["model"] = agent_model(changes["model"])
         return await host.update(session_id, changes)

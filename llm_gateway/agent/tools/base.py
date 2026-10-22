@@ -40,21 +40,32 @@ class ToolContext:
     read_files: set[Path] = field(default_factory=set)   # edit/write require a prior read
     todos: list[dict] = field(default_factory=list)
     skills: dict[str, Skill] = field(default_factory=dict)
+    scratch: Path | None = None    # extra fast, temporary folder (pods: /tmp), also allowed
 
     def resolve(self, path: str) -> Path:
-        """Turn a model-supplied path into an absolute path inside the workspace, or refuse.
-        The model can write `../../etc` or an absolute path; both are checked after resolving."""
+        """Turn a model-supplied path into an absolute path inside the workspace (or the scratch
+        folder), or refuse. The model can write `../../etc` or an absolute path; both are checked
+        after resolving."""
         p = Path(path)
         p = (p if p.is_absolute() else self.workspace / p).resolve()
-        if p != self.workspace and self.workspace not in p.parents:
-            raise ToolError("outside_workspace", f"{path} is outside the workspace ({self.workspace}).")
-        return p
+        for root in (self.workspace, self.scratch):
+            if root is not None and (p == root or root in p.parents):
+                return p
+        raise ToolError("outside_workspace", f"{path} is outside the workspace ({self.workspace}).")
 
     def rel(self, path: Path) -> str:
         try:
             return path.relative_to(self.workspace).as_posix() or "."
         except ValueError:
             return str(path)
+
+
+@dataclass
+class ToolOutput:
+    """What run() returns when the result is not simply "it worked": a command that ran but
+    exited non-zero is not a tool error (the model needs its output), yet it did fail."""
+    text: str
+    ok: bool = True
 
 
 class Tool(ABC):
@@ -78,7 +89,7 @@ class Tool(ABC):
         return f"{self.name}({str(first)[:80]})"
 
     @abstractmethod
-    async def run(self, args: dict, ctx: ToolContext) -> str: ...
+    async def run(self, args: dict, ctx: ToolContext) -> str | ToolOutput: ...
 
 
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}

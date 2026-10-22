@@ -68,7 +68,8 @@ class Git(Tool):
         command = "git --no-pager " + " ".join(shlex.quote(p) for p in parts)
         if "powershell" in ctx.shell[0].lower():
             command = "git --no-pager " + " ".join("'" + p.replace("'", "''") + "'" for p in parts)
-        code, out = await run_shell(ctx.shell, command, ctx.workspace, 120,
+        slow = parts[0] in ("clone", "fetch", "pull", "push", "submodule")   # network: can take minutes
+        code, out = await run_shell(ctx.shell, command, ctx.workspace, 900 if slow else 120,
                                     env={"GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true"})
         out = truncate(out.rstrip(), ctx.max_output_chars) or "(no output)"
         if code != 0:

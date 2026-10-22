@@ -60,6 +60,7 @@ function agRenderList() {
   const cur = ag.cur?.id;
   $("#agList").innerHTML = ag.sessions.map((s) => `<li class="${s.id === cur ? "on" : ""}">
     <button type="button" class="title" data-open="${esc(s.id)}" title="${esc(s.title || s.id)}">${esc(s.title || s.id)}</button>
+    <button type="button" class="ren" data-rename="${esc(s.id)}" aria-label="Rename task">✎</button>
     <button type="button" class="del" data-del="${esc(s.id)}" aria-label="Delete task">✕</button></li>`).join("")
     || `<li class="none">No tasks yet</li>`;
 }
@@ -70,6 +71,15 @@ function agSetListOpen(open) {
 $("#agList").addEventListener("click", async (e) => {
   const open = e.target.closest("[data-open]")?.dataset.open;
   const del = e.target.closest("[data-del]")?.dataset.del;
+  const ren = e.target.closest("[data-rename]")?.dataset.rename;
+  if (ren) {
+    const s = ag.sessions.find((x) => x.id === ren);
+    inlineRename(e.target.closest("li"), s?.title || ren, async (title) => {
+      await agApi(`/api/agent/sessions/${ren}`, { method: "PATCH", body: JSON.stringify({ title }) });
+      await agLoadSessions();
+    });
+    return;
+  }
   if (open) { agSetListOpen(false); try { await agOpen(open); } catch (err) { banner(err.message); } }
   if (del) {
     const what = agPods() ? "its pod and its whole folder" : "its saved conversation (files in the workspace stay)";

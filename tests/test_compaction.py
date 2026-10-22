@@ -30,6 +30,29 @@ async def test_short_conversation_untouched():
     assert out is body and info is None and not s.calls
 
 
+async def test_huge_max_tokens_does_not_eat_the_prompt_budget():
+    s = FakeSummarizer()
+    body = {"messages": chat(3), "max_tokens": 32000}     # what Claude Code asks for by default
+    out, info = await Compactor().compact(body, context=32768, summarize=s)
+    assert info is None and not s.calls
+
+
+async def test_kept_part_never_starts_with_an_orphaned_tool_result():
+    s = FakeSummarizer()
+    filler = "lorem ipsum dolor sit amet " * 60
+    msgs = [{"role": "system", "content": "sys"}]
+    for i in range(12):
+        msgs += [{"role": "user", "content": f"q{i} {filler}"},
+                 {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function",
+                                                                      "function": {"name": "read", "arguments": "{}"}}]},
+                 {"role": "tool", "tool_call_id": f"c{i}", "content": filler * 2}]
+    out, info = await Compactor().compact({"messages": msgs}, context=8192, summarize=s)
+    kept = out["messages"][1:]
+    assert info and kept[0]["role"] != "tool"
+    calls = {c["id"] for m in kept for c in m.get("tool_calls", [])}
+    assert all(m["tool_call_id"] in calls for m in kept if m["role"] == "tool")
+
+
 async def test_long_conversation_compacts_and_keeps_recent():
     s = FakeSummarizer()
     msgs = chat(30)

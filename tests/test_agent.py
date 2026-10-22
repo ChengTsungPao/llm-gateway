@@ -197,6 +197,21 @@ async def test_glob_states_empty_and_missing_folders_plainly(tmp_path):
     assert e.value.code == "not_found"
 
 
+async def test_scratch_folder_is_allowed_too(tmp_path):
+    ws, scratch = tmp_path / "ws", tmp_path / "scratch"
+    ws.mkdir(), scratch.mkdir()
+    (scratch / "big.txt").write_text("cloned")
+    c = ToolContext(workspace=ws.resolve(), shell=SHELL, scratch=scratch.resolve())
+    assert "cloned" in await ReadFile().run({"path": str(scratch / "big.txt")}, c)
+    with pytest.raises(errors.ToolError):
+        await ReadFile().run({"path": str(tmp_path / "elsewhere.txt")}, c)
+
+
+def test_no_nudge_when_the_model_asks_the_user():
+    assert not errors.announces_unfinished_work("Should I delete the folder? Let me know and I'll do it.")
+    assert errors.announces_unfinished_work("The folder exists. Let me remove it and clone again.")
+
+
 async def test_paths_cannot_leave_the_workspace(tmp_path):
     with pytest.raises(errors.ToolError) as e:
         await ReadFile().run({"path": "../outside.txt"}, ctx(tmp_path))
@@ -217,7 +232,9 @@ async def test_bash_and_git_run(tmp_path):
     c = ctx(tmp_path)
     from llm_gateway.agent.tools.shell import Bash
     out = await Bash(SHELL).run({"command": "echo hello"}, c)
-    assert "hello" in out and "[exit code 0]" in out
+    assert out.ok and "hello" in out.text and "[exit code 0]" in out.text
+    failed = await Bash(SHELL).run({"command": "exit 3"}, c)
+    assert not failed.ok and "[exit code 3]" in failed.text      # ran, but shown as a failure
     await Git().run({"args": "init -q"}, c)
     assert "No commits yet" in await Git().run({"args": "status"}, c)
 

@@ -36,7 +36,7 @@ from .llm import Completion, LLMClient, LLMError
 from .permissions import Approver, Decision, PermissionPolicy
 from .session import Session, SessionStore
 from .skills import Skill
-from .tools.base import ToolContext, ToolRegistry, parse_arguments, validate
+from .tools.base import ToolContext, ToolOutput, ToolRegistry, parse_arguments, validate
 from .tools.shell import shell_name
 
 
@@ -59,6 +59,7 @@ class Agent:
     skills: dict[str, Skill] = field(default_factory=dict)
     memory: list[tuple[str, str]] = field(default_factory=list)
     shell: list[str] = field(default_factory=lambda: ["bash", "-c"])
+    scratch: Path | None = None        # extra fast temporary folder (pods: /tmp)
     settings: AgentSettings = field(default_factory=AgentSettings)
 
     def __post_init__(self):
@@ -68,7 +69,7 @@ class Agent:
         self.ctx = ToolContext(workspace=Path(self.session.workspace).resolve(), shell=self.shell,
                                max_output_chars=self.settings.max_output_chars,
                                read_files={Path(p) for p in self.session.read_files},
-                               todos=self.session.todos, skills=self.skills)
+                               todos=self.session.todos, skills=self.skills, scratch=self.scratch)
         self.hook_context = ""     # SessionStart / UserPromptSubmit output, given to the model
         self._started = False
 
@@ -269,7 +270,10 @@ class Agent:
             return
         for r in retries:
             yield Notice("warn", r)
-        self.breaker.record(name, True)
+        self.breaker.record(name, True)     # a command that ran but exited non-zero is not a broken tool
+        ok = True
+        if isinstance(content, ToolOutput):
+            ok, content = content.ok, content.text
 
         # 6. Post-tool checks: silent failures, then the PostToolUse hook
         content = self._check_silent_failure(name, content)
@@ -285,13 +289,13 @@ class Agent:
             yield TodoUpdate(list(self.ctx.todos))
         if repeats == 1:
             content += "\n\n[Note: you made this exact call twice in a row. Do something different next.]"
-        yield ToolResult(call_id, name, True, content, None, round(time.monotonic() - started, 2))
+        yield ToolResult(call_id, name, ok, content, None, round(time.monotonic() - started, 2))
 
     # ── helpers ───────────────────────────────────────────────────────────
 
     def system_prompt(self) -> str:
         return build_system_prompt(self.session, shell_name=shell_name(self.shell), skills=self.skills,
-                                   memory=self.memory, extra_context=self.hook_context)
+                                   memory=self.memory, extra_context=self.hook_context, scratch=self.scratch)
 
     @staticmethod
     def _check_silent_failure(name: str, content: str) -> str:

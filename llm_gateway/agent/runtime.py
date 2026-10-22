@@ -79,6 +79,7 @@ class AgentRuntime:
             skills=discover_skills(workspace, [user_dir / "skills"]),
             memory=read_memory(workspace, user_dir),
             shell=self.shell,
+            scratch=self.cfg.scratch_dir,
             settings=AgentSettings(max_steps=self.cfg.max_steps,
                                    max_output_chars=max(4000, min(30_000, int(context_tokens * 0.25 * 3.5)))),
         )

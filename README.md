@@ -11,7 +11,9 @@ Built and tuned on an RTX 3060 12 GB. The model list below was measured on that 
 flowchart LR
     subgraph clients [Clients]
         UI["Web UI<br/>desktop · phone"]
-        SDK["OpenAI SDK / tools"]
+        SDK["OpenAI SDK / tools<br/>oh-my-pi"]
+        CC["Claude Code"]
+        CX["Codex"]
         CLI["llm-agent CLI<br/>agent runs locally"]
     end
 
@@ -41,6 +43,8 @@ flowchart LR
     UI --> MGMT
     UI --> AG
     SDK --> V1
+    CC -- "/v1/messages" --> V1
+    CX -- "/v1/responses" --> V1
     CLI --> V1
     V1 --> MM
     MM --> OL
@@ -69,12 +73,13 @@ flowchart LR
 | | |
 |---|---|
 | **OpenAI-compatible API** | `/v1/models` and `/v1/chat/completions`, streaming included. Any OpenAI SDK or tool works. Set the base URL to the gateway and use a profile id as `model`. |
+| **Claude Code and Codex** | Two more API formats, translated to the same models: the Anthropic Messages API (`/v1/messages`) for Claude Code, and the OpenAI Responses API (`/v1/responses`) for Codex. Both stream, including tool calls. See [Use with coding tools](#use-with-claude-code-codex-and-oh-my-pi). |
 | **One model at a time** | A 12 GB card holds one model. Asking for a different model unloads the current one first, then loads the new one. |
 | **No switching while busy** | While a request is running, switching and unloading are refused with HTTP 409 instead of queueing. The same applies while a model is loading. Requests for the model that is already loaded run concurrently. |
 | **Auto-compaction** | When a conversation outgrows the model's context, the loaded model summarizes older messages (in the conversation's own language), and the summary is placed in the system prompt. The newest messages stay verbatim. Ollama would otherwise drop old messages silently, and llama.cpp would reject the request. |
 | **Two backends** | **Ollama** for plain models. Requests go through its native `/api/chat` so each profile's context size applies. **llama.cpp** (`llama-server`) for tuned setups such as MoE expert offload (`-ncmoe`) or a draft model for speculative decoding. These setups make 20–35B models usable on 12 GB. |
 | **Thinking switch** | `"think": false` turns reasoning off, or down to the lowest level for models that can't turn it off (gpt-oss, Muse). `true` turns it on. Answers can arrive much sooner with it off. |
-| **Web UI (desktop + phone)** | **Models page:** every model with context, quantization, size, where it runs (GPU or GPU+CPU), measured speed, and collapsible details (file, parameters, launch flags). The page also shows which model is loaded. Every page, phone included, shows the computer's CPU, RAM, GPU load and VRAM.<br>**Chat page:** an Ollama-style chat over the same API, with conversations kept in the browser.<br>**API page:** copyable examples. Installable as a home-screen app. |
+| **Web UI (desktop + phone)** | **Models page:** every model with context, quantization, size, where it runs (GPU or GPU+CPU), measured speed, and collapsible details (file, parameters, launch flags). The page also shows which model is loaded. Every page, phone included, shows the computer's CPU, RAM, GPU load and VRAM.<br>**Chat page:** an Ollama-style chat over the same API, with conversations kept in the browser. Chats and agent tasks can be renamed in the ☰ list (✎).<br>**API page:** copyable examples. Installable as a home-screen app. |
 | **Coding agent** | A Claude Code-style agent harness on the local models, available in the web UI (Agent tab) and as a terminal command (`llm-agent`).<br>**Tools:** files (read, write, edit, glob, grep), `bash`, `git`, `web_fetch` and a task list.<br>**Behaviour:** permission modes with approval prompts; skills (`SKILL.md`), hooks and MCP servers; memory in `AGENTS.md`; context compaction; sessions saved after every step. See [docs/agent.md](docs/agent.md) for a guided tour of the code. |
 | **Clean GPU** | On Windows, the `llama-server` processes the gateway starts are killed with it, even if the gateway itself is killed. The gateway never unloads pinned Ollama models, e.g. an embedding model another service uses. |
 
@@ -106,6 +111,7 @@ All speeds are generation speed in tokens/s, measured through the gateway with `
 | `qwen3.5-9b-agent` | GPU | 49.8 | 50.3 |
 | `gemma4-26b-agent` | GPU+CPU (14 expert layers on CPU, KV q8_0) | 24.0 | 32.4 |
 | `qwen3.6-35b-agent` | GPU+CPU (30 expert layers on CPU, KV q8_0) | 13.6 | 14.0 |
+| `qwen3.5-9b-code` (64K, for Claude Code / Codex) | GPU (7.1 GB) | 50.9 | 51.2 |
 
 The two MoE agent profiles were measured with only ~1 GB of system RAM free; they depend heavily on free RAM. In an end-to-end test, `qwen3-8b-agent` found a bug in a small project, fixed it and ran pytest until it passed in 21 s. gpt-oss is not offered for the agent: through llama.cpp its tool calls were not parsed.
 
@@ -156,6 +162,9 @@ Open `http://127.0.0.1:8790`. To use it from a phone, set `server.host` to `0.0.
 |---|---|---|
 | GET | `/v1/models` | Profiles, with `context_length` and `active`. |
 | POST | `/v1/chat/completions` | OpenAI chat completions; `stream: true` supported. Switches model if needed; 409 if another model is in use. Extra field `think` (bool). |
+| POST | `/v1/messages` | Anthropic Messages API (Claude Code). Busy model → 529, which Claude Code retries. |
+| POST | `/v1/messages/count_tokens` | Estimated prompt tokens, for Claude Code's context meter. |
+| POST | `/v1/responses` | OpenAI Responses API (Codex). Stateless: send the full input (`previous_response_id` is not supported). |
 | GET | `/api/status` | Active model, state (`idle` / `loading` / `ready` / `error`), whether it is busy, and resources: CPU %, RAM, GPU load and VRAM. |
 | GET | `/api/profiles` | Full profile list for the UI. |
 | POST | `/api/activate` | `{"id": "..."}`: load a model ahead of time. 409 while another model is in use. |
@@ -182,6 +191,65 @@ The agent has its own routes under `/api/agent/` for the web UI:
 With `agent.sandbox: "k8s"` they answer any device, because every agent is shut in its own pod. With `local`, other devices need `server.api_key`.
 
 When a conversation was compacted, the response says so. Non-streaming responses carry the header `X-LLM-Gateway-Compacted` and an `llm_gateway` field. Streaming responses start with the SSE comment line `: llm-gateway {...}`. Reasoning is returned in `reasoning_content`.
+
+## Use with Claude Code, Codex and oh-my-pi
+
+These tools work through the gateway on local models. Their system prompts and tool definitions are large: about 20K tokens for Claude Code and 13K for Codex. So they need a profile with a big context, such as `qwen3.5-9b-code` (64K, fully on the GPU).
+
+Tested on the RTX 3060 with a small project with a failing test. Each tool found both bugs, fixed them, and ran pytest until it passed:
+
+| Tool | Model | Time |
+|---|---|---|
+| Claude Code 2.1.296 | `qwen3.5-9b-code` | 61 s |
+| Codex | `qwen3.5-9b-code` | 50 s |
+
+With a 32K profile, Claude Code ran out of room ("Autocompact is thrashing") and left the fix half done.
+
+**Claude Code** (environment variables):
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8790
+ANTHROPIC_AUTH_TOKEN=local                 # anything; or your server.api_key
+ANTHROPIC_MODEL=qwen3.5-9b-code
+ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.5-9b-code   # side requests (titles, summaries) use the same model
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536       # the real window, so Claude Code compacts in time
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+CLAUDE_CODE_ATTRIBUTION_HEADER=0           # keeps the prompt prefix stable, so the model can reuse its cache
+```
+
+Notes:
+
+- Anthropic does not support Claude Code on non-Claude models; it works, but expect a much weaker model than Claude.
+- An unknown model name in a request (Claude Code's own names) is served by the model already loaded, so side requests never force a model switch.
+
+**Codex** (`~/.codex/config.toml`):
+
+```toml
+model = "qwen3.5-9b-code"
+model_provider = "llmgw"
+model_context_window = 65536
+model_max_output_tokens = 8192
+
+[model_providers.llmgw]
+name = "llm-gateway"
+base_url = "http://127.0.0.1:8790/v1"
+wire_api = "responses"
+```
+
+Note on Windows: Codex's own sandbox blocked every command in `--sandbox workspace-write` during the test. With `--sandbox danger-full-access` (in a folder you don't mind it changing) it worked.
+
+**oh-my-pi** (`~/.omp/agent/models.yml`) uses plain Chat Completions:
+
+```yaml
+providers:
+  llm-gateway:
+    baseUrl: http://127.0.0.1:8790/v1
+    api: openai-completions
+    auth: none
+    compat: {supportsDeveloperRole: false, supportsReasoningEffort: false}
+    models:
+      - {id: qwen3.5-9b-code, contextWindow: 65536}
+```
 
 ## Configuration (`config.json`)
 

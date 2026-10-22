@@ -99,7 +99,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .convs li.on { background: var(--surface-2); }
 .convs li button.title { flex: 1; text-align: left; border: none; background: transparent; padding: 7px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .convs li button.del { border: none; background: transparent; color: var(--muted); padding: 4px 8px; visibility: hidden; }
-.convs li:hover button.del, .convs li.on button.del { visibility: visible; }
+.convs li button.ren { border: none; background: transparent; color: var(--muted); padding: 4px 6px; visibility: hidden; }
+.convs li:hover button.del, .convs li.on button.del, .convs li:hover button.ren, .convs li.on button.ren { visibility: visible; }
+@media (hover: none) { .convs li button.del, .convs li button.ren { visibility: visible; } }   /* touch: no hover */
+.convs li input.rename { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--accent); background: var(--bg); }
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .chat-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .chat-head .icon { display: none; padding: 4px 10px; }

@@ -74,8 +74,12 @@ async def test_pod_host_runs_each_agent_in_its_own_folder(tmp_path, monkeypatch)
     assert Path(a["host_folder"]) == agents_dir / a["id"] / "workspace" and Path(a["host_folder"]).is_dir()
     assert {s["id"] for s in await host.list()} == {a["id"], b["id"]}
 
-    updated = await host.update(a["id"], {"mode": "accept_edits"})
-    assert updated["mode"] == "accept_edits"
+    updated = await host.update(a["id"], {"mode": "accept_edits", "title": "Read hermes-agent"})
+    assert updated["mode"] == "accept_edits" and updated["title"] == "Read hermes-agent"
+    # renaming a stopped agent edits its checkpoint without starting a pod
+    monkeypatch.setattr(host.pods, "status", lambda agent_id: _stopped())
+    assert (await host.update(b["id"], {"title": "Second"}))["title"] == "Second"
+    monkeypatch.setattr(host.pods, "status", lambda agent_id: _ready())
     with pytest.raises(HostError) as e:
         await host.update(a["id"], {"workspace": "C:/"})        # a pod's folder is fixed
     assert e.value.status == 400
@@ -91,3 +95,7 @@ async def test_pod_host_runs_each_agent_in_its_own_folder(tmp_path, monkeypatch)
 
 async def _ready():
     return "ready"
+
+
+async def _stopped():
+    return "none"

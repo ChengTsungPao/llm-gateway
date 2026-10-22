@@ -78,6 +78,7 @@ class AgentConfig:
     workspaces: tuple[Path, ...] = ()     # local sandbox: the agent may only open workspaces inside these
     data_dir: Path = Path("data")          # sessions, user-wide AGENTS.md and skills
     default_workspace: Path = Path("data/workspace")   # an empty folder; always allowed
+    scratch_dir: Path | None = None        # fast temporary folder the tools may also use (pods: /tmp)
     default_mode: str = "default"
     max_steps: int = 40
     shell: tuple[str, ...] = ()            # empty = detect (Git Bash on Windows, else PowerShell)

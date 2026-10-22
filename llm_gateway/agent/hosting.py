@@ -98,6 +98,9 @@ class LocalHost:
     async def update(self, agent_id: str, changes: dict) -> dict:
         live = self._live(agent_id)
         try:
+            if "title" in changes:
+                live.agent.session.title = str(changes["title"]).strip()[:120] or live.agent.session.title
+                live.agent.checkpoint()
             if "mode" in changes:
                 check_mode(changes["mode"])
                 live.agent.set_mode(changes["mode"])     # applies from the next tool call, even mid-turn
