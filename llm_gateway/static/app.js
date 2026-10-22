@@ -85,6 +85,16 @@ function block(b) {
   return html;
 }
 
+// "Working" indicator (chat and agent): bouncing dots plus what is happening right now.
+function workingEl(label) {
+  const d = document.createElement("div");
+  d.className = "working";
+  d.setAttribute("role", "status");
+  d.innerHTML = `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="lbl"></span>`;
+  d.querySelector(".lbl").textContent = label;
+  return d;
+}
+
 // ── tabs ──────────────────────────────────────────────────────────────────
 function showView(name) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === name));
@@ -380,7 +390,8 @@ async function send(text) {
   const metaEl = el.querySelector(".meta");
   const p = prof(model);
   if (model !== status.active) { metaEl.textContent = `Loading ${p?.name || model}…`; pollStatus(); }
-  body.classList.add("cursor");
+  const working = workingEl("Thinking…");       // until the answer is complete
+  el.insertBefore(working, metaEl);
 
   const history = c.messages.slice(0, -1).filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
   abortCtl = new AbortController();
@@ -417,6 +428,7 @@ async function send(text) {
         const d = j.choices?.[0]?.delta || {};
         if (d.content || d.reasoning_content) {
           if (tFirst == null) { tFirst = performance.now(); metaEl.textContent = ""; }
+          if (d.content) working.querySelector(".lbl").textContent = "Writing…";
           nChunks++;
         }
         if (d.reasoning_content) reply.reasoning += d.reasoning_content;
@@ -482,7 +494,7 @@ function renderApi() {
     if (!sel.value) sel.value = profiles[0].id;
   }
   const example = sel.value || profiles[0]?.id || "qwen3-8b";
-  $("#apiModelNote").textContent = `id: ${example} · used in the examples below`;
+  $("#apiModelNote").textContent = `model id: ${example}`;
   const eps = [
     { m: "GET", p: "/v1/models", d: "List all models, with context size and whether each is loaded.", c: `curl ${base}/v1/models${auth}` },
     { m: "POST", p: "/v1/chat/completions", d: "Chat. If model differs from the loaded one, the gateway switches to it. While the GPU is busy the request waits in the queue (see Resources). Streaming supported.", c: `curl ${base}/v1/chat/completions${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${example}", "stream": true,\n       "messages": [{"role": "user", "content": "Hello"}]}'` },

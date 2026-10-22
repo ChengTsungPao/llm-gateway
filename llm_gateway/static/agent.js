@@ -15,7 +15,18 @@ async function agApi(path, opts = {}) {
 }
 const agBox = () => $("#agMessages");
 const agPods = () => ag.info?.sandbox === "k8s";     // every agent in its own Kubernetes pod and folder
-function agAdd(el) { agBox().appendChild(el); agBox().scrollTop = agBox().scrollHeight; return el; }
+function agAdd(el) {
+  // new output goes above the "working" indicator, which stays last while a turn runs
+  if (ag.working?.isConnected) agBox().insertBefore(el, ag.working); else agBox().appendChild(el);
+  agBox().scrollTop = agBox().scrollHeight;
+  return el;
+}
+function agWorking(label) {
+  if (!ag.working?.isConnected) { ag.working = workingEl(label); agBox().appendChild(ag.working); }
+  ag.working.querySelector(".lbl").textContent = label;
+  agBox().scrollTop = agBox().scrollHeight;
+}
+function agWorkingOff() { ag.working?.remove(); ag.working = null; }
 function agEl(cls, html) { const d = document.createElement("div"); d.className = cls; d.innerHTML = html; return d; }
 
 function agEmpty(extra = "") {
@@ -239,11 +250,12 @@ function agPermission(ev) {
 
 function agHandle(ev) {
   switch (ev.type) {
-    case "text": { const t = agAssistantText(); t.src += ev.text; t.el.innerHTML = md(t.src); agBox().scrollTop = agBox().scrollHeight; break; }
-    case "reasoning": break;   // not shown; the tool calls already show what the agent is doing
-    case "tool_call": agToolCard(ev.id, ev.summary); break;
-    case "permission_request": agPermission(ev); break;
+    case "text": { const t = agAssistantText(); t.src += ev.text; t.el.innerHTML = md(t.src); agWorking("Writing…"); break; }
+    case "reasoning": agWorking("Thinking…"); break;   // the reasoning text itself is not shown
+    case "tool_call": agToolCard(ev.id, ev.summary); agWorking(`Running ${ev.name}…`); break;
+    case "permission_request": agPermission(ev); agWorking("Waiting for your approval"); break;
     case "tool_result": {
+      agWorking("Thinking…");
       agToolResult(ev.id, ev.ok, ev.content, ev.duration_s);
       const perm = agBox().querySelector(`.perm[data-id="${CSS.escape(ev.id)}"]:not(.answered)`);
       if (perm) { perm.classList.add("answered"); perm.querySelectorAll("button").forEach((b) => (b.disabled = true)); }
@@ -253,6 +265,7 @@ function agHandle(ev) {
     case "notice": ag.text = null; agAdd(agEl("notice " + ev.level, esc(ev.text))); break;
     case "turn_end": {
       ag.text = null;
+      agWorkingOff();
       const used = (ev.usage?.prompt_tokens || 0) + (ev.usage?.completion_tokens || 0);
       const why = { done: "Done", max_steps: "Step limit reached", loop: "Stopped: repeated calls", cancelled: "Stopped", error: "Error", blocked: "Blocked by a hook" }[ev.reason] || ev.reason;
       agAdd(agEl("turn-end", `${why} · ${ev.steps} steps${used ? ` · ${used} tokens` : ""}`));
@@ -266,7 +279,8 @@ function agHandle(ev) {
 // 2 s; the queue order itself is shown in the Resources panel.
 async function agWaitStart(id) {
   agBusy(true);
-  const pending = agAdd(agEl("msg assistant", `<div class="body cursor"></div>`));
+  agWorking("Starting…");
+  const pending = { remove: agWorkingOff };
   try {
     for (;;) {
       await new Promise((res) => setTimeout(res, 2000));
@@ -281,7 +295,9 @@ async function agWaitStart(id) {
   } catch (e) { pending.remove(); agAdd(agEl("notice error", esc(e.message))); agBusy(false); }
 }
 
-function agBusy(on) { $("#agSend").hidden = on; $("#agStop").hidden = !on; $("#agModel").disabled = on; $("#agWorkspace").disabled = on || agPods(); }
+function agBusy(on) {
+  if (on) agWorking(ag.working?.querySelector(".lbl").textContent || "Thinking…"); else agWorkingOff();
+  $("#agSend").hidden = on; $("#agStop").hidden = !on; $("#agModel").disabled = on; $("#agWorkspace").disabled = on || agPods(); }
 function agDetach() { try { ag.reader?.cancel(); } catch { /* already closed */ } ag.reader = null; }
 
 async function agAttach(start) {
