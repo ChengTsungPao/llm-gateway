@@ -12,7 +12,7 @@ let convs = store.get("convs", []);
 let currentId = store.get("current", null);
 let abortCtl = null;
 let pendingActivate = null;
-const BUSY_MSG = "目前的模型正在使用或載入中(對話或 API 請求還在跑),完成前不能切換模型。";
+const BUSY_MSG = "The current model is in use or loading (a chat or API request is still running). Switching is possible once it finishes.";
 
 // ── helpers ───────────────────────────────────────────────────────────────
 function headers(json = true) {
@@ -23,7 +23,7 @@ function headers(json = true) {
 }
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
-  if (r.status === 401) { showAuth(); throw new Error("需要 API key"); }
+  if (r.status === 401) { showAuth(); throw new Error("API key required"); }
   const data = await r.json().catch(() => ({}));
   if (r.status === 409) throw new Error(BUSY_MSG);
   if (!r.ok) throw new Error(data?.error?.message || r.statusText);
@@ -40,7 +40,7 @@ function banner(text, kind = "error") {
 }
 function showAuth() {
   $("#keyRow").hidden = false;
-  banner("伺服器需要 API key。請到 API 頁輸入後儲存。");
+  banner("The server requires an API key. Enter it on the API page and save.");
 }
 
 // Minimal, safe markdown: HTML is escaped first; only a small set of constructs is rendered.
@@ -100,30 +100,51 @@ function renderStatus() {
   const dot = $("#activeDot");
   dot.className = "dot " + (status.status === "ready" ? "ready" : status.status === "loading" ? "loading" : status.status === "error" ? "error" : "");
   if (status.status === "loading" && loadingP) {
-    $("#activeName").textContent = "載入中:" + loadingP.name;
+    $("#activeName").textContent = "Loading: " + loadingP.name;
     $("#activeMeta").textContent = loadingP.backend + " · context " + fmtCtx(loadingP.context);
   } else if (p) {
     $("#activeName").textContent = p.name;
     const sp = p.speed_zh_tps || p.speed_tps;
     $("#activeMeta").textContent = `${p.backend} · context ${fmtCtx(p.context)}${sp ? " · ~" + sp + " tok/s" : ""}`;
   } else {
-    $("#activeName").textContent = status.status === "error" ? "載入失敗" : "尚未載入模型";
+    $("#activeName").textContent = status.status === "error" ? "Load failed" : "No model loaded";
     $("#activeMeta").textContent = "";
   }
   $("#unloadBtn").hidden = !status.active;
   $("#unloadBtn").disabled = !!status.busy;
-  $("#unloadBtn").title = status.busy ? "模型使用中,完成前不能卸載" : "卸載目前的模型,釋放顯示卡";
-  if (status.status === "error" && status.error) banner("模型載入失敗:" + status.error);
-  else if ($("#banner").textContent.startsWith("模型載入失敗")) banner("");
-  const g = status.gpu;
-  $("#gpu").hidden = !g;
-  if (g) {
-    $("#gpuLabel").textContent = `${g.name.replace("NVIDIA GeForce ", "")} ${(g.memory_used_mb / 1024).toFixed(1)}/${(g.memory_total_mb / 1024).toFixed(0)} GB`;
-    $("#gpuFill").style.width = (100 * g.memory_used_mb / g.memory_total_mb).toFixed(0) + "%";
-  }
+  $("#unloadBtn").title = status.busy ? "The model is in use; it can be released when it finishes" : "Release the current model and free the GPU";
+  if (status.status === "error" && status.error) banner("Model failed to load: " + status.error);
+  else if ($("#banner").textContent.startsWith("Model failed to load")) banner("");
+  renderResources();
   renderModels();
   renderChatHead();
 }
+// CPU, RAM, GPU and VRAM of the machine running the gateway (refreshed with the 2-second status poll).
+function renderResources() {
+  const s = status.system, g = status.gpu;
+  const gb = (mb) => (mb / 1024).toFixed(1);
+  const meters = [];
+  if (s) {
+    meters.push({ k: "CPU", pct: s.cpu_percent, v: `${Math.round(s.cpu_percent)}%`, t: `${s.cpu_count} threads` });
+    meters.push({ k: "RAM", pct: 100 * s.memory_used_mb / s.memory_total_mb, v: `${gb(s.memory_used_mb)}/${gb(s.memory_total_mb)} GB`, t: "System memory" });
+  }
+  if (g) {
+    meters.push({ k: "GPU", pct: g.utilization, v: `${g.utilization}%`, t: g.name });
+    meters.push({ k: "VRAM", pct: 100 * g.memory_used_mb / g.memory_total_mb, v: `${gb(g.memory_used_mb)}/${gb(g.memory_total_mb)} GB`, t: g.name + " memory" });
+  }
+  const box = $("#res");
+  const open = store.get("resOpen", false);      // collapsed until the user opens it
+  $("#resToggle").hidden = !meters.length;
+  $("#resToggle").textContent = open ? "Resources ▾" : "Resources ▸";
+  $("#resToggle").setAttribute("aria-expanded", String(open));
+  box.hidden = !meters.length || !open;
+  box.innerHTML = meters.map((m) => `<div class="res-item" title="${esc(m.t)}">
+    <span class="res-k">${m.k}</span><span class="res-v">${m.v}</span>
+    <span class="meter"><span class="meter-fill${m.pct >= 90 ? " hot" : ""}" style="width:${Math.min(100, m.pct).toFixed(0)}%"></span></span></div>`).join("");
+}
+
+$("#resToggle").addEventListener("click", () => { store.set("resOpen", !store.get("resOpen", false)); renderResources(); });
+
 let offline = false;
 async function pollStatus() {
   try {
@@ -131,7 +152,7 @@ async function pollStatus() {
     if (offline) { offline = false; banner(""); }
     renderStatus();
   } catch (e) {
-    if (e instanceof TypeError) { offline = true; banner("連不上 llm-gateway,正在重試…", "info"); }
+    if (e instanceof TypeError) { offline = true; banner("Cannot reach llm-gateway, retrying…", "info"); }
   }
 }
 $("#unloadBtn").addEventListener("click", async () => {
@@ -145,29 +166,29 @@ function renderModels() {
     const active = p.id === status.active;
     const loading = p.id === status.loading || p.id === pendingActivate;
     const bar = (label, v) => v ? `<div class="speed"><span class="lbl">${label}</span><span class="track"><span class="fill${v < 30 ? " slow" : ""}" style="width:${Math.min(100, v / 80 * 100)}%"></span><span class="goal"></span></span><span class="val">${v} tok/s</span></div>` : "";
-    const busyNote = status.loading ? "其他模型正在載入,完成前不能切換" : "目前的模型正在使用中,完成前不能切換";
-    const btn = active ? `<button type="button" class="ghost" disabled>已載入</button>`
-      : loading ? `<button type="button" class="ghost" disabled>載入中…</button>`
-      : status.busy ? `<button type="button" class="ghost" disabled title="${busyNote}">使用中,不能切換</button>`
-      : `<button type="button" class="primary" data-activate="${esc(p.id)}">載入</button>`;
-    const quant = p.quant ? `<span>量化 <b>${esc(p.quant)}</b>${p.bits ? ` · 平均 ${p.bits} bit` : ""}</span>` : "";
+    const busyNote = status.loading ? "Another model is loading; switching is possible once it finishes" : "The current model is in use; switching is possible once it finishes";
+    const btn = active ? `<button type="button" class="ghost" disabled>Loaded</button>`
+      : loading ? `<button type="button" class="ghost" disabled>Loading…</button>`
+      : status.busy ? `<button type="button" class="ghost" disabled title="${busyNote}">In use</button>`
+      : `<button type="button" class="primary" data-activate="${esc(p.id)}">Load</button>`;
+    const quant = p.quant ? `<span>Quant <b>${esc(p.quant)}</b>${p.bits ? ` · avg ${p.bits} bit` : ""}</span>` : "";
     const details = [
-      ["模型檔", p.model],
-      ["參數量", p.params_b ? `${p.params_b}B` : ""],
-      ["平均位元數", p.bits ? `${p.bits} bit/參數(檔案大小 ÷ 參數量,含未壓縮的詞嵌入等)` : ""],
-      ["啟動參數", p.args?.length ? p.args.join(" ") : ""],
-      ["說明", p.notes],
+      ["Model file", p.model],
+      ["Parameters", p.params_b ? `${p.params_b}B` : ""],
+      ["Avg bits", p.bits ? `${p.bits} bits per parameter (file size ÷ parameters, including unquantized parts such as embeddings)` : ""],
+      ["Launch flags", p.args?.length ? p.args.join(" ") : ""],
+      ["Notes", p.notes],
     ].filter(([, v]) => v);
     return `<article class="model${active ? " active" : ""}">
       <div class="name">${esc(p.name)} <span class="id">${esc(p.id)}</span>
-        <span class="tag">${esc(p.backend)}</span>${p.type ? `<span class="tag">${p.type === "moe" ? "MoE" : "密集"}</span>` : ""}
-        ${p.placement ? `<span class="tag ${p.placement === "gpu" ? "on-gpu" : "on-cpu"}" title="${p.placement === "gpu" ? "整個模型都在顯示卡上" : "模型放不進顯示卡,一部分放在 CPU / 系統記憶體"}">${p.placement === "gpu" ? "GPU" : "GPU+CPU"}</span>` : ""}
-        ${active ? '<span class="tag on">已載入</span>' : ""}</div>
-      <div class="facts"><span>context <b>${fmtCtx(p.context)}</b>${p.max_context ? ` / 最大 ${fmtCtx(p.max_context)}` : ""}</span>
-        ${quant}${p.size_gb ? `<span>大小 <b>${p.size_gb} GB</b></span>` : ""}</div>
+        <span class="tag">${esc(p.backend)}</span>${p.type ? `<span class="tag">${p.type === "moe" ? "MoE" : "Dense"}</span>` : ""}
+        ${p.placement ? `<span class="tag ${p.placement === "gpu" ? "on-gpu" : "on-cpu"}" title="${p.placement === "gpu" ? "The whole model is on the GPU" : "Too big for the GPU: part of it runs on the CPU / system RAM"}">${p.placement === "gpu" ? "GPU" : "GPU+CPU"}</span>` : ""}
+        ${active ? '<span class="tag on">Loaded</span>' : ""}</div>
+      <div class="facts"><span>context <b>${fmtCtx(p.context)}</b>${p.max_context ? ` / max ${fmtCtx(p.max_context)}` : ""}</span>
+        ${quant}${p.size_gb ? `<span>Size <b>${p.size_gb} GB</b></span>` : ""}</div>
       <div class="act">${btn}</div>
-      ${bar("中文對話", p.speed_zh_tps)}${bar("英文程式", p.speed_tps)}
-      ${details.length ? `<details class="more" data-id="${esc(p.id)}"${openDetails.has(p.id) ? " open" : ""}><summary>詳細資訊</summary>
+      ${bar("Chinese", p.speed_zh_tps)}${bar("English code", p.speed_tps)}
+      ${details.length ? `<details class="more" data-id="${esc(p.id)}"${openDetails.has(p.id) ? " open" : ""}><summary>Details</summary>
         <dl>${details.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>` : ""}
     </article>`;
   }).join("");
@@ -183,7 +204,7 @@ $("#modelList").addEventListener("click", async (e) => {
   pendingActivate = id; renderModels(); banner("");
   pollStatus();
   try { status = await api("/api/activate", { method: "POST", body: JSON.stringify({ id }) }); }
-  catch (err) { banner(err.message === BUSY_MSG ? BUSY_MSG : "模型載入失敗:" + err.message, err.message === BUSY_MSG ? "info" : "error"); }
+  catch (err) { banner(err.message === BUSY_MSG ? BUSY_MSG : "Model failed to load: " + err.message, err.message === BUSY_MSG ? "info" : "error"); }
   pendingActivate = null; pollStatus();
 });
 
@@ -191,13 +212,13 @@ $("#modelList").addEventListener("click", async (e) => {
 function saveConvs() { store.set("convs", convs); store.set("current", currentId); }
 function current() { return convs.find((c) => c.id === currentId); }
 function newConv() {
-  const c = { id: Date.now().toString(36), title: "新對話", model: $("#chatModel").value || status.active, messages: [] };
+  const c = { id: Date.now().toString(36), title: "New chat", model: $("#chatModel").value || status.active, messages: [] };
   convs.unshift(c); currentId = c.id; saveConvs(); renderConvs(); renderMessages();
 }
 function renderConvs() {
   $("#convList").innerHTML = convs.map((c) => `<li class="${c.id === currentId ? "on" : ""}">
     <button type="button" class="title" data-open="${c.id}">${esc(c.title)}</button>
-    <button type="button" class="del" data-del="${c.id}" aria-label="刪除">✕</button></li>`).join("");
+    <button type="button" class="del" data-del="${c.id}" aria-label="Delete">✕</button></li>`).join("");
 }
 $("#convList").addEventListener("click", (e) => {
   const open = e.target.closest("[data-open]")?.dataset.open;
@@ -218,16 +239,22 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#conv
 function renderChatHead() {
   const sel = $("#chatModel");
   if (!sel.options.length && profiles.length) {
-    sel.innerHTML = profiles.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+    sel.innerHTML = profiles.map((p) => modelOption(p.id, p.name, p.context,
+      [p.backend, p.quant, p.speed_zh_tps ? `~${p.speed_zh_tps} tok/s` : ""].filter(Boolean).join(" · "))).join("");
     const saved = store.get("model", null);
     sel.value = (saved && prof(saved)) ? saved : (status.active || profiles[0].id);
   }
   const p = prof(sel.value);
   if (!p) return;
-  const note = p.id === status.active ? "已載入" : "送出時會先切換";
+  const note = p.id === status.active ? "loaded" : "switches on send";
   const used = estimateTokens(current()?.messages || []);
-  const usedTxt = used ? `約 ${used >= 1024 ? (used / 1024).toFixed(1) + "K" : used} / ` : "";
+  const usedTxt = used ? `~${used >= 1024 ? (used / 1024).toFixed(1) + "K" : used} / ` : "";
   $("#chatCtx").textContent = `context ${usedTxt}${fmtCtx(p.context)} · ${note}`;
+}
+// Closed menu: "Qwen3 8B · 32K"; open menu: the full name plus a hint line.
+function modelOption(id, name, context, hint) {
+  const short = `${name.split(" · ")[0]} · ${fmtCtx(context)}`;
+  return `<option value="${esc(id)}" data-short="${esc(short)}" data-hint="${esc(`context ${fmtCtx(context)}${hint ? " · " + hint : ""}`)}">${esc(name)}</option>`;
 }
 // Same rough estimate the server uses: CJK chars ≈ 1 token, other text ≈ 3.5 chars per token.
 function estimateTokens(messages) {
@@ -248,7 +275,7 @@ function msgEl(m) {
     div.innerHTML = `<div class="body"></div>`;
     div.querySelector(".body").textContent = m.content;
   } else {
-    div.innerHTML = `${m.reasoning ? `<details class="think"><summary>思考過程</summary><div></div></details>` : ""}<div class="body${m.error ? " error" : ""}"></div><div class="meta"></div>`;
+    div.innerHTML = `${m.reasoning ? `<details class="think"><summary>Reasoning</summary><div></div></details>` : ""}<div class="body${m.error ? " error" : ""}"></div><div class="meta"></div>`;
     if (m.reasoning) div.querySelector(".think div").textContent = m.reasoning;
     div.querySelector(".body").innerHTML = m.error ? esc(m.error) : md(m.content || "");
     div.querySelector(".meta").textContent = m.meta || "";
@@ -280,7 +307,7 @@ async function send(text) {
   const body = el.querySelector(".body");
   const metaEl = el.querySelector(".meta");
   const p = prof(model);
-  if (model !== status.active) { metaEl.textContent = `正在載入 ${p?.name || model}…`; pollStatus(); }
+  if (model !== status.active) { metaEl.textContent = `Loading ${p?.name || model}…`; pollStatus(); }
   body.classList.add("cursor");
 
   const history = c.messages.slice(0, -1).filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
@@ -293,7 +320,7 @@ async function send(text) {
       method: "POST", headers: headers(), signal: abortCtl.signal,
       body: JSON.stringify({ model, messages: history, stream: true, think: $("#thinkToggle").checked }),
     });
-    if (r.status === 401) { showAuth(); throw new Error("需要 API key"); }
+    if (r.status === 401) { showAuth(); throw new Error("API key required"); }
     if (r.status === 409) throw new Error(BUSY_MSG);
     if (!r.ok || !r.body) { const d = await r.json().catch(() => ({})); throw new Error(d?.error?.message || r.statusText); }
     const reader = r.body.getReader();
@@ -314,7 +341,7 @@ async function send(text) {
         const data = line.slice(5).trim();
         if (data === "[DONE]") continue;
         let j; try { j = JSON.parse(data); } catch { continue; }
-        if (j.error) throw new Error(j.error.message || "後端錯誤");
+        if (j.error) throw new Error(j.error.message || "Backend error");
         const d = j.choices?.[0]?.delta || {};
         if (d.content || d.reasoning_content) {
           if (tFirst == null) { tFirst = performance.now(); metaEl.textContent = ""; }
@@ -327,11 +354,11 @@ async function send(text) {
         if (d.content || d.reasoning_content) {
           if (reply.reasoning && !el.querySelector(".think")) {
             const det = document.createElement("details"); det.className = "think";
-            det.innerHTML = "<summary>思考過程</summary><div></div>"; el.insertBefore(det, body);
+            det.innerHTML = "<summary>Reasoning</summary><div></div>"; el.insertBefore(det, body);
           }
           if (reply.reasoning) {
             el.querySelector(".think div").textContent = reply.reasoning;
-            el.querySelector(".think summary").textContent = reply.content ? "思考過程" : `思考中…(已 ${reply.reasoning.length} 字)`;
+            el.querySelector(".think summary").textContent = reply.content ? "Reasoning" : `Thinking… (${reply.reasoning.length} chars)`;
           }
           body.innerHTML = md(reply.content);
           box.scrollTop = box.scrollHeight;
@@ -339,17 +366,17 @@ async function send(text) {
       }
     }
   } catch (e) {
-    if (e.name === "AbortError") reply.meta = "已停止";
-    else { reply.error = "錯誤:" + e.message; }
+    if (e.name === "AbortError") reply.meta = "Stopped";
+    else { reply.error = "Error: " + e.message; }
   } finally {
     const secs = tFirst ? (performance.now() - tFirst) / 1000 : 0;
     const n = timings?.predicted_n || usage?.completion_tokens || nChunks;
     const tps = timings?.predicted_per_second || (secs > 0 ? n / secs : null);
     if (!reply.error && !reply.meta) {
-      reply.meta = `${p?.name || model} · ${n} tokens${tps ? ` · ${tps.toFixed(1)} tok/s` : ""}${tFirst ? ` · 首字 ${((tFirst - t0) / 1000).toFixed(1)}s` : ""}`;
+      reply.meta = `${p?.name || model} · ${n} tokens${tps ? ` · ${tps.toFixed(1)} tok/s` : ""}${tFirst ? ` · first token ${((tFirst - t0) / 1000).toFixed(1)}s` : ""}`;
     }
     if (reply.compacted) {
-      reply.meta = `${reply.meta ? reply.meta + " · " : ""}對話超過 context,已自動摘要較早的 ${reply.compacted.compacted_messages} 則訊息`;
+      reply.meta = `${reply.meta ? reply.meta + " · " : ""}the chat outgrew the context: ${reply.compacted.compacted_messages} earlier messages were summarized`;
     }
     abortCtl = null;
     $("#sendBtn").hidden = false; $("#stopBtn").hidden = true;
@@ -377,26 +404,26 @@ function renderApi() {
   const auth = store.get("key", "") ? ' -H "Authorization: Bearer $LLM_GATEWAY_KEY"' : "";
   const example = profiles[0]?.id || "qwen3-8b";
   const eps = [
-    { m: "GET", p: "/v1/models", d: "列出所有可用模型(含 context 大小、是否載入中)。", c: `curl ${base}/v1/models${auth}` },
-    { m: "POST", p: "/v1/chat/completions", d: "對話。model 和目前載入的不同時,會自動切換(等前面的請求跑完)。支援 stream。", c: `curl ${base}/v1/chat/completions${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${example}", "stream": true,\n       "messages": [{"role": "user", "content": "你好"}]}'` },
-    { m: "GET", p: "/api/status", d: "目前載入的模型、狀態(idle / loading / ready / error)、顯示卡記憶體。", c: `curl ${base}/api/status${auth}` },
-    { m: "POST", p: "/api/activate", d: "預先載入某個模型(會卸載目前的)。", c: `curl -X POST ${base}/api/activate${auth} \\\n  -H "Content-Type: application/json" -d '{"id": "${example}"}'` },
-    { m: "POST", p: "/api/unload", d: "卸載目前的模型,釋放顯示卡。", c: `curl -X POST ${base}/api/unload${auth}` },
-    { m: "PY", p: "OpenAI Python SDK", d: "任何 OpenAI 相容的工具都能這樣接。", c: `from openai import OpenAI\nclient = OpenAI(base_url="${base}/v1", api_key="${store.get("key", "") ? "<your key>" : "none"}")\nr = client.chat.completions.create(\n    model="${example}",\n    messages=[{"role": "user", "content": "你好"}],\n)\nprint(r.choices[0].message.content)` },
+    { m: "GET", p: "/v1/models", d: "List all models, with context size and whether each is loaded.", c: `curl ${base}/v1/models${auth}` },
+    { m: "POST", p: "/v1/chat/completions", d: "Chat. If model differs from the loaded one, the gateway switches to it (refused with 409 while another model is in use). Streaming supported.", c: `curl ${base}/v1/chat/completions${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${example}", "stream": true,\n       "messages": [{"role": "user", "content": "Hello"}]}'` },
+    { m: "GET", p: "/api/status", d: "Loaded model, state (idle / loading / ready / error) and GPU memory.", c: `curl ${base}/api/status${auth}` },
+    { m: "POST", p: "/api/activate", d: "Load a model ahead of time (unloads the current one).", c: `curl -X POST ${base}/api/activate${auth} \\\n  -H "Content-Type: application/json" -d '{"id": "${example}"}'` },
+    { m: "POST", p: "/api/unload", d: "Unload the current model and free the GPU.", c: `curl -X POST ${base}/api/unload${auth}` },
+    { m: "PY", p: "OpenAI Python SDK", d: "Any OpenAI-compatible tool connects the same way.", c: `from openai import OpenAI\nclient = OpenAI(base_url="${base}/v1", api_key="${store.get("key", "") ? "<your key>" : "none"}")\nr = client.chat.completions.create(\n    model="${example}",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(r.choices[0].message.content)` },
   ];
   $("#endpoints").innerHTML = eps.map((e, i) => `<div class="ep">
     <div class="ep-head"><span class="method${e.m === "POST" ? " post" : ""}">${e.m}</span><code>${esc(e.p)}</code></div>
     <p>${esc(e.d)}</p><pre id="ep${i}">${esc(e.c)}</pre>
-    <button type="button" class="ghost copy" data-copy="#ep${i}">複製</button></div>`).join("");
+    <button type="button" class="ghost copy" data-copy="#ep${i}">Copy</button></div>`).join("");
 }
 document.addEventListener("click", async (e) => {
   const sel = e.target.closest("[data-copy]")?.dataset.copy;
   if (!sel) return;
   const text = $(sel).textContent;
   const btn = e.target.closest("button");
-  try { await navigator.clipboard.writeText(text); btn.textContent = "已複製"; }
-  catch { const r = document.createRange(); r.selectNodeContents($(sel)); const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "已選取,請按 Ctrl+C"; }
-  setTimeout(() => (btn.textContent = "複製"), 1500);
+  try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
+  catch { const r = document.createRange(); r.selectNodeContents($(sel)); const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected, press Ctrl+C"; }
+  setTimeout(() => (btn.textContent = "Copy"), 1500);
 });
 $("#saveKey").addEventListener("click", () => { store.set("key", $("#apiKey").value.trim()); banner(""); init(); });
 
@@ -407,9 +434,10 @@ async function init() {
     profiles = (await api("/api/profiles")).profiles;
     status = await api("/api/status");
     $("#keyRow").hidden = !status.auth_required;
-  } catch (e) { if (e.message !== "需要 API key") banner("連不上 llm-gateway:" + e.message); return; }
+  } catch (e) { if (e.message !== "API key required") banner("Cannot reach llm-gateway: " + e.message); return; }
   renderChatHead(); renderStatus(); renderConvs(); renderMessages(); renderApi();
 }
+enhanceSelect($("#chatModel"), "Model");
 showView(store.get("view", "chat"));
 init();
 setInterval(pollStatus, 2000);

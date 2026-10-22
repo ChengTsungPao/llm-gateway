@@ -45,6 +45,16 @@ def test_same_model_handles_implicit_latest_tag():
     assert not _same_model("qwen3:8b", "qwen3:14b")
 
 
+def test_ollama_history_survives_broken_tool_arguments():
+    from llm_gateway.backends import _ollama_messages
+    msgs = _ollama_messages([
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "f", "arguments": '{"a": '}}]},
+        {"role": "tool", "tool_call_id": "c", "name": "f", "content": "Error (bad_json)"},
+    ])
+    assert msgs[0]["tool_calls"][0]["function"]["arguments"] == {}
+    assert msgs[1]["tool_name"] == "f"
+
+
 def test_llamacpp_think_flag_maps_to_template_kwargs(tmp_path):
     cfg = load_config(write_config(tmp_path, [LLAMA]))
     b = LlamaCppBackend(cfg.profiles[0], cfg, client=None)

@@ -124,6 +124,18 @@ async def evict_ollama(client: httpx.AsyncClient, cfg: Config, keep: str | None,
         await unload_ollama_model(client, cfg.ollama_url, name)
 
 
+def _json_object(raw) -> dict:
+    """Ollama wants tool-call arguments as an object. A model's earlier call may have had broken
+    JSON (the agent sent an error back for it); keep the history usable instead of failing."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _ollama_messages(messages: list[dict]) -> list[dict]:
     out = []
     for m in messages:
@@ -132,10 +144,11 @@ def _ollama_messages(messages: list[dict]) -> list[dict]:
         if isinstance(content, list):  # OpenAI content parts → text only
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         msg["content"] = content or ""
+        if msg["role"] == "tool" and m.get("name"):
+            msg["tool_name"] = m["name"]   # tells the model which call this result answers
         if m.get("tool_calls"):
             msg["tool_calls"] = [
-                {"function": {"name": tc["function"]["name"],
-                              "arguments": json.loads(tc["function"].get("arguments") or "{}")}}
+                {"function": {"name": tc["function"]["name"], "arguments": _json_object(tc["function"].get("arguments"))}}
                 for tc in m["tool_calls"]
             ]
         out.append(msg)
@@ -241,6 +254,7 @@ class OllamaBackend(Backend):
                 yield _sse({"error": {"message": f"Ollama error {r.status_code}: {text[:300]}"}})
                 yield _sse("[DONE]")
                 return
+            n_calls = 0  # Ollama sends each tool call whole, possibly in separate chunks: number them all
             async for line in r.aiter_lines():
                 if not line.strip():
                     continue
@@ -256,13 +270,14 @@ class OllamaBackend(Backend):
                     delta["content"] = msg["content"]
                 tool_calls = _openai_tool_calls(msg.get("tool_calls"))
                 if tool_calls:
-                    delta["tool_calls"] = [dict(tc, index=i) for i, tc in enumerate(tool_calls)]
+                    delta["tool_calls"] = [dict(tc, index=n_calls + i) for i, tc in enumerate(tool_calls)]
+                    n_calls += len(tool_calls)
                 if delta:
                     yield chunk(delta)
                 if d.get("done"):
                     n_gen = d.get("eval_count", 0)
                     gen_s = d.get("eval_duration", 0) / 1e9
-                    finish = "length" if d.get("done_reason") == "length" else "stop"
+                    finish = "tool_calls" if n_calls else "length" if d.get("done_reason") == "length" else "stop"
                     yield chunk({}, finish, {
                         "usage": {"prompt_tokens": d.get("prompt_eval_count", 0), "completion_tokens": n_gen,
                                   "total_tokens": d.get("prompt_eval_count", 0) + n_gen},

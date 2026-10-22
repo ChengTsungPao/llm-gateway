@@ -5,6 +5,65 @@ Point any OpenAI client at it, pick a model by id, and the gateway loads that mo
 
 Built and tuned on an RTX 3060 12 GB. The model list below was measured on that machine.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph clients [Clients]
+        UI["Web UI<br/>desktop · phone"]
+        SDK["OpenAI SDK / tools"]
+        CLI["llm-agent CLI<br/>agent runs locally"]
+    end
+
+    subgraph gw ["llm-gateway (FastAPI, :8790)"]
+        V1["/v1 OpenAI API<br/>+ auto-compaction"]
+        MGMT["/api status · models<br/>CPU · RAM · GPU · VRAM"]
+        AG["/api/agent<br/>PodHost"]
+        MM["ModelManager<br/>one model at a time · 409 while busy"]
+    end
+
+    subgraph gpu ["RTX 3060 12 GB"]
+        OL["Ollama"]
+        LC["llama-server<br/>MoE offload · draft models"]
+    end
+
+    subgraph k8s ["Kubernetes (Docker Desktop) · namespace llm-agents"]
+        P1["pod agent-a<br/>agent loop + tools"]
+        P2["pod agent-b<br/>agent loop + tools"]
+    end
+
+    subgraph disk ["Host folder data/agents/"]
+        F1[("a/ → /agent")]
+        F2[("b/ → /agent")]
+    end
+
+    UI --> V1
+    UI --> MGMT
+    UI --> AG
+    SDK --> V1
+    CLI --> V1
+    V1 --> MM
+    MM --> OL
+    MM --> LC
+    AG -- "kubectl proxy" --> P1
+    AG -- "kubectl proxy" --> P2
+    P1 -- "model calls: host.docker.internal/v1" --> V1
+    P2 --> V1
+    P1 --- F1
+    P2 --- F2
+```
+
+- **Model serving.**
+  - Every client speaks the OpenAI API to `/v1`.
+  - The ModelManager keeps exactly one model on the GPU, served by either Ollama or a tuned `llama-server`.
+  - Switching is refused (HTTP 409) while the current model is in use.
+- **Agents.**
+  - Every web agent runs in its own Kubernetes pod.
+  - The pod sees only its own host folder (`data/agents/<id>/`, mounted at `/agent`).
+  - The pod calls the gateway's `/v1` for the model, like any other client.
+  - The terminal agent (`llm-agent`) runs the same harness on this machine.
+  - The code is explained in [docs/agent.md](docs/agent.md).
+
 ## Features
 
 | | |
@@ -15,7 +74,8 @@ Built and tuned on an RTX 3060 12 GB. The model list below was measured on that 
 | **Auto-compaction** | When a conversation outgrows the model's context, the loaded model summarizes older messages (in the conversation's own language), and the summary is placed in the system prompt. The newest messages stay verbatim. Ollama would otherwise drop old messages silently, and llama.cpp would reject the request. |
 | **Two backends** | **Ollama** for plain models. Requests go through its native `/api/chat` so each profile's context size applies. **llama.cpp** (`llama-server`) for tuned setups such as MoE expert offload (`-ncmoe`) or a draft model for speculative decoding. These setups make 20–35B models usable on 12 GB. |
 | **Thinking switch** | `"think": false` turns reasoning off, or down to the lowest level for models that can't turn it off (gpt-oss, Muse). `true` turns it on. Answers can arrive much sooner with it off. |
-| **Web UI (desktop + phone)** | **Models page:** every model with context, quantization, size, where it runs (GPU or GPU+CPU), measured speed, and collapsible details (file, parameters, launch flags). The page also shows which model is loaded and current GPU memory.<br>**Chat page:** an Ollama-style chat over the same API, with conversations kept in the browser.<br>**API page:** copyable examples. Installable as a home-screen app. |
+| **Web UI (desktop + phone)** | **Models page:** every model with context, quantization, size, where it runs (GPU or GPU+CPU), measured speed, and collapsible details (file, parameters, launch flags). The page also shows which model is loaded. Every page, phone included, shows the computer's CPU, RAM, GPU load and VRAM.<br>**Chat page:** an Ollama-style chat over the same API, with conversations kept in the browser.<br>**API page:** copyable examples. Installable as a home-screen app. |
+| **Coding agent** | A Claude Code-style agent harness on the local models, available in the web UI (Agent tab) and as a terminal command (`llm-agent`).<br>**Tools:** files (read, write, edit, glob, grep), `bash`, `git`, `web_fetch` and a task list.<br>**Behaviour:** permission modes with approval prompts; skills (`SKILL.md`), hooks and MCP servers; memory in `AGENTS.md`; context compaction; sessions saved after every step. See [docs/agent.md](docs/agent.md) for a guided tour of the code. |
 | **Clean GPU** | On Windows, the `llama-server` processes the gateway starts are killed with it, even if the gateway itself is killed. The gateway never unloads pinned Ollama models, e.g. an embedding model another service uses. |
 
 ## Models (RTX 3060 12 GB)
@@ -37,6 +97,17 @@ All speeds are generation speed in tokens/s, measured through the gateway with `
 | `qwen3-14b` | Qwen3 14B | Ollama | Q4_K_M (5.02) | 8K | GPU | 34.0 | 33.9 |
 | `qwen3.6-35b-moe` | Qwen3.6 35B-A3B | llama.cpp | Q4_K_M (4.89) | 8K | GPU+CPU (28 expert layers on CPU) | 30.5 | 20.1 |
 | `muse-glimmer-iq2` | Muse Glimmer 30B | llama.cpp | UD-IQ2_XXS (3.09) | 8K | GPU | 22.0 | 22.1 |
+
+**Agent profiles** (`"tools": true`) use the same weights with a 32K context, because agents fill the context fast with file contents and command output:
+
+| Profile id | Runs on | Chinese | English |
+|---|---|---:|---:|
+| `qwen3-8b-agent` | GPU | 58.3 | 58.3 |
+| `qwen3.5-9b-agent` | GPU | 49.8 | 50.3 |
+| `gemma4-26b-agent` | GPU+CPU (14 expert layers on CPU, KV q8_0) | 24.0 | 32.4 |
+| `qwen3.6-35b-agent` | GPU+CPU (30 expert layers on CPU, KV q8_0) | 13.6 | 14.0 |
+
+The two MoE agent profiles were measured with only ~1 GB of system RAM free; they depend heavily on free RAM. In an end-to-end test, `qwen3-8b-agent` found a bug in a small project, fixed it and ran pytest until it passed in 21 s. gpt-oss is not offered for the agent: through llama.cpp its tool calls were not parsed.
 
 - **Which to use:**
   - **Best quality that stays above 30 tok/s:** `gemma4-26b-qat-moe`.
@@ -85,7 +156,7 @@ Open `http://127.0.0.1:8790`. To use it from a phone, set `server.host` to `0.0.
 |---|---|---|
 | GET | `/v1/models` | Profiles, with `context_length` and `active`. |
 | POST | `/v1/chat/completions` | OpenAI chat completions; `stream: true` supported. Switches model if needed; 409 if another model is in use. Extra field `think` (bool). |
-| GET | `/api/status` | Active model, state (`idle` / `loading` / `ready` / `error`), whether it is busy, GPU memory. |
+| GET | `/api/status` | Active model, state (`idle` / `loading` / `ready` / `error`), whether it is busy, and resources: CPU %, RAM, GPU load and VRAM. |
 | GET | `/api/profiles` | Full profile list for the UI. |
 | POST | `/api/activate` | `{"id": "..."}`: load a model ahead of time. 409 while another model is in use. |
 | POST | `/api/unload` | Unload the current model. 409 while it is in use. |
@@ -101,6 +172,14 @@ r = client.chat.completions.create(
 )
 print(r.choices[0].message.content)
 ```
+
+The agent has its own routes under `/api/agent/` for the web UI:
+
+- `info`, `sessions` (create, get, update mode/model, delete)
+- `sessions/{id}/turn` and `sessions/{id}/events` (SSE)
+- `sessions/{id}/permission` and `sessions/{id}/cancel`
+
+With `agent.sandbox: "k8s"` they answer any device, because every agent is shut in its own pod. With `local`, other devices need `server.api_key`.
 
 When a conversation was compacted, the response says so. Non-streaming responses carry the header `X-LLM-Gateway-Compacted` and an `llm_gateway` field. Streaming responses start with the SSE comment line `: llm-gateway {...}`. Reasoning is returned in `reasoning_content`.
 
@@ -120,6 +199,16 @@ When a conversation was compacted, the response says so. Non-streaming responses
 | `llamacpp.startup_timeout_s` | How long to wait for a model to load. |
 | `llamacpp.log_dir` | `llama-server` logs, one file per profile (relative to the config file). |
 
+| `agent.workspaces` | Folders the agent may work in from the web UI (the CLI works in any folder you start it in). |
+| `agent.default_workspace` | Where new web tasks start: an empty folder (default `data/workspace`). The folder can be changed any time in the UI. |
+| `agent.sandbox` | `local`: agents run in the gateway and act on this computer. `k8s`: each agent runs in its own Kubernetes pod and can only touch its own folder ([details](docs/agent.md#pods-agentsandbox-k8s)). |
+| `agent.k8s.agents_dir` | Host folder for pod agents; agent `<id>` gets `<agents_dir>/<id>/` mounted at `/agent` (default `data/agents`). |
+| `agent.k8s.*` | `namespace`, `image`, `kube_context`, `cpu` / `memory` limits per pod, `gateway_url` (how pods reach the gateway), `host_mount_prefix`. |
+| `agent.data_dir` | Saved agent sessions, plus user-wide `AGENTS.md` and `skills/` (default `data`). |
+| `agent.default_mode` | `plan`, `default`, `accept_edits` or `bypass` (see [docs/agent.md](docs/agent.md#6-safety-model)). |
+| `agent.max_steps` | Model calls per agent turn before it stops and asks you to continue. |
+| `agent.hooks`, `agent.mcp_servers` | Shell hooks and MCP servers for the agent ([examples](docs/agent.md#7-extending-it)). |
+
 Each entry in `profiles`:
 
 | Field | Required | Meaning |
@@ -131,6 +220,7 @@ Each entry in `profiles`:
 | `model` | ollama | Ollama tag, e.g. `qwen3:8b`. |
 | `model_path` | llamacpp | GGUF file. |
 | `args` | no | Extra `llama-server` flags (llamacpp only), e.g. `["-ngl","99","-ncmoe","12"]`. |
+| `tools` | no | `true` if the model calls tools reliably; only these can be picked for the agent. |
 | `placement` | no | `gpu` or `gpu+cpu`, shown as a tag in the UI. Check with `ollama ps` (Ollama) or the `-ncmoe` flag (llama.cpp). |
 | `max_context`, `type`, `size_gb`, `notes` | no | Shown in the UI. |
 | `quant`, `bits`, `params_b` | no | Quantization format, average bits per weight and parameter count, shown in the UI. |
@@ -140,6 +230,7 @@ Each entry in `profiles`:
 
 | Script | |
 |---|---|
+| `uv run llm-agent [--model id] [--mode m] [-p "task"]` | The coding agent in the terminal, working in the current folder (the gateway must be running). `--resume <id>` continues a saved session; `/help` lists commands. |
 | `uv run python scripts/measure.py --write config.json [ids...]` | Measure each profile through the running gateway (English code + Chinese chat) and store the speeds in the config. |
 | `uv run python scripts/smoke_test.py [base] <id> [other-id]` | End-to-end check: plain and streaming chat, then switch to another model and back. |
 | `uv run --with pillow python scripts/make_icons.py` | Regenerate the app icons in `llm_gateway/static/icons/`. |

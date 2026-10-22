@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -17,20 +17,19 @@
 <body>
 <header class="topbar">
   <div class="brand"><span class="logo" aria-hidden="true">▚</span>llm-gateway</div>
-  <div class="active-pill" id="activePill" title="目前載入的模型">
+  <div class="active-pill" id="activePill" title="Loaded model">
     <span class="dot" id="activeDot"></span>
-    <span class="active-text"><span id="activeName">尚未載入模型</span><small id="activeMeta"></small></span>
+    <span class="active-text"><span id="activeName">No model loaded</span><small id="activeMeta"></small></span>
   </div>
-  <div class="gpu" id="gpu" hidden>
-    <span class="gpu-label" id="gpuLabel">GPU</span>
-    <span class="meter"><span class="meter-fill" id="gpuFill"></span></span>
-  </div>
-  <button class="ghost" id="unloadBtn" type="button" hidden>卸載</button>
+  <button type="button" class="ghost top-btn res-toggle" id="resToggle" aria-expanded="false" aria-controls="res" hidden>Resources ▸</button>
+  <div class="res" id="res" hidden aria-label="Computer resources"></div>
+  <button class="ghost top-btn" id="unloadBtn" type="button" hidden>Release</button>
 </header>
 
-<nav class="tabs" id="tabs" aria-label="頁面">
-  <button type="button" data-view="chat" class="on">對話</button>
-  <button type="button" data-view="models">模型</button>
+<nav class="tabs" id="tabs" aria-label="Pages">
+  <button type="button" data-view="chat" class="on">Chat</button>
+  <button type="button" data-view="agent">Agent</button>
+  <button type="button" data-view="models">Models</button>
   <button type="button" data-view="api">API</button>
 </nav>
 
@@ -42,31 +41,65 @@
     <div class="scrim" id="scrim" hidden></div>
     <aside class="convs" id="convs">
       <div class="convs-head">
-        <button type="button" class="primary block" id="newChat">＋ 新對話</button>
-        <button type="button" class="ghost icon close-convs" id="closeConvs" aria-label="關閉對話列表">✕</button>
+        <button type="button" class="primary block" id="newChat">+ New chat</button>
+        <button type="button" class="ghost icon close-convs" id="closeConvs" aria-label="Close chat list">✕</button>
       </div>
       <ul id="convList"></ul>
     </aside>
     <div class="chat">
       <div class="chat-head">
-        <button type="button" class="ghost icon" id="toggleConvs" aria-label="對話列表">☰</button>
+        <button type="button" class="ghost icon" id="toggleConvs" aria-label="Chat list">☰</button>
         <label class="model-select">
-          <span class="sr">模型</span>
+          <span class="sr">Model</span>
           <select id="chatModel"></select>
         </label>
         <span class="chip" id="chatCtx"></span>
-        <label class="think-toggle" title="關掉可以更快得到回答;模型不支援思考時沒有作用"><input type="checkbox" id="thinkToggle"> 思考</label>
+        <label class="think-toggle" title="Off gives faster answers; no effect on models without thinking"><input type="checkbox" id="thinkToggle"> Thinking</label>
       </div>
       <div class="messages" id="messages">
         <div class="empty" id="emptyState">
-          <h2>開始對話</h2>
-          <p>選一個模型就可以開始。如果它不是目前載入的模型,送出時會先自動切換,大模型需要幾十秒到幾分鐘。</p>
+          <h2>Start a chat</h2>
+          <p>Pick a model and start. If it is not the loaded model, sending switches to it first; large models take from tens of seconds to a few minutes to load.</p>
         </div>
       </div>
       <form class="composer" id="composer">
-        <textarea id="input" rows="1" placeholder="輸入訊息,Enter 送出,Shift+Enter 換行" aria-label="訊息"></textarea>
-        <button type="submit" class="primary" id="sendBtn">送出</button>
-        <button type="button" class="danger" id="stopBtn" hidden>停止</button>
+        <textarea id="input" rows="1" placeholder="Message · Enter to send, Shift+Enter for a new line" aria-label="Message"></textarea>
+        <button type="submit" class="primary" id="sendBtn">Send</button>
+        <button type="button" class="danger" id="stopBtn" hidden>Stop</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Agent -->
+  <section class="view chat-view" id="view-agent">
+    <div class="scrim" id="agScrim" hidden></div>
+    <aside class="convs" id="agConvs">
+      <div class="convs-head">
+        <button type="button" class="primary block" id="agNew">+ New task</button>
+        <button type="button" class="ghost icon close-convs" id="agCloseList" aria-label="Close task list">✕</button>
+      </div>
+      <ul id="agList"></ul>
+    </aside>
+    <div class="chat agent">
+      <div class="chat-head agent-head">
+        <button type="button" class="ghost icon" id="agToggleList" aria-label="Task list">☰</button>
+        <label class="model-select"><span class="sr">Model</span><select id="agModel"></select></label>
+        <label class="model-select"><span class="sr">Permission mode</span><select id="agMode"></select></label>
+      </div>
+      <details class="ag-workspace" id="agWorkspaceRow">
+        <summary>Workspace <span class="ws-short" id="agWsShort"></span></summary>
+        <div class="ws-body">
+          <input id="agWorkspace" list="agRoots" autocomplete="off" spellcheck="false" aria-label="Workspace folder">
+          <datalist id="agRoots"></datalist>
+          <span class="chip" id="agWsNote"></span>
+        </div>
+      </details>
+      <div class="ag-todos" id="agTodos" hidden></div>
+      <div class="messages" id="agMessages"></div>
+      <form class="composer" id="agComposer">
+        <textarea id="agInput" rows="1" placeholder="Give it a task, e.g. &quot;find out how to run this project's tests, then run them&quot;" aria-label="Task"></textarea>
+        <button type="submit" class="primary" id="agSend">Send</button>
+        <button type="button" class="danger" id="agStop" hidden>Stop</button>
       </form>
     </div>
   </section>
@@ -75,8 +108,8 @@
   <section class="view" id="view-models">
     <div class="page">
       <div class="page-head">
-        <h1>模型</h1>
-        <p>一次只會載入一個模型。載入新模型時,會先卸載目前的模型。速度是透過這個閘道實測的生成速度(tok/s),分成中文對話和英文寫程式兩種題目,因為推測解碼這類加速對不同內容效果差很多。虛線是 30 tok/s。可以用 <code>scripts/measure.py</code> 重新量測。</p>
+        <h1>Models</h1>
+        <p>One model is loaded at a time; loading another unloads the current one first. Speeds are generation speeds (tok/s) measured through this gateway on two prompts, Chinese chat and English code, because speed-ups such as speculative decoding work very differently on different content. The dashed line is 30 tok/s. Re-measure with <code>scripts/measure.py</code>.</p>
       </div>
       <div class="model-list" id="modelList"></div>
     </div>
@@ -87,23 +120,25 @@
     <div class="page">
       <div class="page-head">
         <h1>API</h1>
-        <p>OpenAI 相容。任何支援 OpenAI API 的工具,把 base URL 設成下面這個位址就能用;<code>model</code> 填模型頁上的 ID。</p>
+        <p>OpenAI-compatible. Any tool that speaks the OpenAI API works: set its base URL to the address below and use a model ID from the Models page as <code>model</code>.</p>
       </div>
       <div class="base-url">
         <span class="label">Base URL</span>
         <code id="baseUrl"></code>
-        <button type="button" class="ghost" data-copy="#baseUrl">複製</button>
+        <button type="button" class="ghost" data-copy="#baseUrl">Copy</button>
       </div>
       <div class="key-row" id="keyRow" hidden>
         <label for="apiKey">API Key</label>
-        <input id="apiKey" type="password" autocomplete="off" placeholder="伺服器有設定 api_key,請輸入">
-        <button type="button" class="primary" id="saveKey">儲存</button>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="The server has an api_key; enter it here">
+        <button type="button" class="primary" id="saveKey">Save</button>
       </div>
       <div class="endpoints" id="endpoints"></div>
     </div>
   </section>
 </main>
 
+<script src="/static/picker.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/agent.js"></script>
 </body>
 </html>

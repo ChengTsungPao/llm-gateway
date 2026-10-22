@@ -15,7 +15,27 @@
     "startup_timeout_s": 300,
     "log_dir": "logs"
   },
+  "agent": {
+    "workspaces": ["/path/to/your/projects"],
+    "data_dir": "data",
+    "sandbox": "k8s",
+    "k8s": {"agents_dir": "data/agents", "namespace": "llm-agents", "image": "llm-gateway-agent:latest",
+            "kube_context": "docker-desktop", "cpu": "2", "memory": "2Gi"},
+    "default_mode": "default",
+    "max_steps": 40,
+    "hooks": {},
+    "mcp_servers": {}
+  },
   "profiles": [
+    {
+      "id": "qwen3-8b-agent",
+      "name": "Qwen3 8B · Agent 32K",
+      "backend": "ollama",
+      "model": "qwen3:8b",
+      "context": 32768,
+      "tools": true,
+      "notes": "Agent profile: a larger context for tool results."
+    },
     {
       "id": "qwen3-8b",
       "name": "Qwen3 8B",
