@@ -75,11 +75,21 @@ code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); p
 .meter { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .meter-fill { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s; }
 .meter-fill.hot { background: var(--warn); }
-.res-queue { grid-column: 1 / -1; display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
-.q-row { display: grid; grid-template-columns: 6.5em 1fr; gap: 8px; color: var(--fg); min-width: 0; }
-.q-row > span { min-width: 0; overflow-wrap: anywhere; }
-.q-k { color: var(--muted); font-weight: 700; }
-.res-queue ol { margin: 0; padding-left: 1.3em; }
+/* GPU queue list (Models page and Resources panel) */
+.jobs-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
+.jobs-card h2 { margin: 0 0 8px; font-size: .95rem; }
+.jobs { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.job { display: grid; grid-template-columns: 4.8em 1fr; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 8px; font-size: .86rem; min-width: 0; }
+.job:not(.running) { border-bottom: 1px solid var(--line); border-radius: 0; }
+.job:last-child { border-bottom: none; }
+.job.running { border: 2px solid var(--accent); background: var(--accent-soft); }
+.job.running.idle { border-color: var(--muted); background: var(--line); color: var(--muted); }   /* idle: grey fill */
+.job.running.idle .job-n { color: var(--muted); }
+.job-n { font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.job.running .job-n { color: var(--accent); }
+.job-what { min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; }
+.job-what small { color: var(--muted); font-size: .76rem; }
+.res-queue { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
 .api-model .model-select { min-width: 0; }
 
 /* tabs */

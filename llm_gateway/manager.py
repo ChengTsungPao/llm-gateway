@@ -49,6 +49,7 @@ class Ticket:
     request_id: str | None = None    # set by the caller so a UI can find its own place in the queue
     seq: int = 0
     created: float = field(default_factory=time.time)
+    started: float | None = None     # when it got the GPU
 
 
 @dataclass
@@ -95,7 +96,8 @@ class ModelManager:
             "since": self.since,
             "inflight": int(self._running is not None),
             "busy": bool(self._running or self.loading_id or self._waiting),
-            "running": self._describe(self._running, now) if self._running else None,
+            "running": ({**self._describe(self._running, now),
+                         "running_s": round(now - (self._running.started or now))} if self._running else None),
             "queue": [{**self._describe(t, now), "position": i + 1} for i, t in enumerate(order)],
             "leases": [{"id": l.id, "model": l.profile_id, "idle_s": round(now - l.last_used)}
                        for l in self._live_leases(now)],
@@ -197,6 +199,7 @@ class ModelManager:
                 if not granted:            # gave up or disconnected: the next one may go now
                     self._cond.notify_all()
             self._running = ticket
+            ticket.started = time.time()
         try:
             backend = await self._load(profile)
             if lease:

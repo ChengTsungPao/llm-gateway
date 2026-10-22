@@ -116,6 +116,7 @@ function renderStatus() {
   if (status.status === "error" && status.error) banner("Model failed to load: " + status.error);
   else if ($("#banner").textContent.startsWith("Model failed to load")) banner("");
   renderResources();
+  $("#jobList").innerHTML = jobRows();
   renderModels();
   renderChatHead();
 }
@@ -153,23 +154,32 @@ function who(item) {
   const by = item.title ? `Agent “${item.title}”` : { chat: "Chat", agent: "Agent", api: "API client", admin: "Model load" }[item.source] || item.source;
   return `${esc(by)} · ${esc(name)}`;
 }
-function renderQueue() {
+// The GPU queue as one ordered list: the running job boxed on top (or Empty), then the jobs
+// waiting for the GPU in the order they will run, then agent tasks waiting to start.
+function jobRows() {
   const run = status.running, queue = status.queue || [], leases = status.leases || [];
-  const tasks = status.tasks || { running: [], waiting: [] };
+  const waiting = status.tasks?.waiting || [];
   const rows = [];
-  rows.push(`<div class="q-row"><span class="q-k">Running</span><span>${run ? "▶ " + who(run) : "— idle"}</span></div>`);
-  if (leases.length) {
-    rows.push(`<div class="q-row"><span class="q-k">Reserved</span><span>${leases.map((l) =>
-      `${esc(l.title ? `Agent “${l.title}”` : l.id)} keeps ${esc(prof(l.model)?.name || l.model)}`).join("<br>")}</span></div>`);
+  if (run) {
+    const kept = leases.find((l) => l.id === run.lease);
+    rows.push(`<li class="job running"><span class="job-n">Running</span><span class="job-what">${who(run)}
+      <small>${run.running_s ?? 0}s${kept ? " · keeps the model until the task ends" : ""}</small></span></li>`);
+  } else {
+    const kept = leases[0];
+    rows.push(`<li class="job running idle"><span class="job-n">Running</span><span class="job-what">Empty${kept
+      ? `<small>${esc(kept.title ? `Agent “${kept.title}”` : kept.id)} keeps ${esc(prof(kept.model)?.name || kept.model)} between its steps</small>` : ""}</span></li>`);
   }
-  rows.push(`<div class="q-row"><span class="q-k">GPU queue</span><span>${queue.length ? `<ol>${queue.map((q) =>
-    `<li>${who(q)} · ${q.waiting_s}s</li>`).join("")}</ol>` : "— empty"}</span></div>`);
-  if (tasks.running.length || tasks.waiting.length) {
-    rows.push(`<div class="q-row"><span class="q-k">Agent tasks</span><span>${tasks.running.map((r) =>
-      `▶ ${esc(r.title)}`).join("<br>")}${tasks.waiting.length ? `<ol>${tasks.waiting.map((w) =>
-      `<li>${esc(w.title)} · ${w.waiting_s}s</li>`).join("")}</ol>` : ""}</span></div>`);
+  let n = 0;
+  for (const q of queue) {
+    rows.push(`<li class="job"><span class="job-n">${++n}</span><span class="job-what">${who(q)}<small>waiting ${q.waiting_s}s</small></span></li>`);
   }
-  return `<div class="res-queue">${rows.join("")}</div>`;
+  for (const w of waiting) {
+    rows.push(`<li class="job"><span class="job-n">${++n}</span><span class="job-what">Agent “${esc(w.title)}”<small>task waiting to start · ${w.waiting_s}s</small></span></li>`);
+  }
+  return rows.join("");
+}
+function renderQueue() {
+  return `<ol class="jobs res-queue">${jobRows()}</ol>`;
 }
 
 $("#resToggle").addEventListener("click", () => { store.set("resOpen", !store.get("resOpen", false)); renderResources(); });
