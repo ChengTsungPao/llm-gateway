@@ -1,0 +1,7 @@
+# machine-specific config (model paths, host) — copy config.example.json
+config.json
+logs/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

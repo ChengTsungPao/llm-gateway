@@ -1,0 +1,55 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8790,
+    "api_key": "",
+    "auto_compact": true
+  },
+  "ollama": {
+    "url": "http://127.0.0.1:11434",
+    "pinned": ["bge-m3"]
+  },
+  "llamacpp": {
+    "server_binary": "/path/to/llama-server",
+    "port": 8791,
+    "startup_timeout_s": 300,
+    "log_dir": "logs"
+  },
+  "profiles": [
+    {
+      "id": "qwen3-8b",
+      "name": "Qwen3 8B",
+      "backend": "ollama",
+      "model": "qwen3:8b",
+      "context": 8192,
+      "max_context": 40960,
+      "type": "dense",
+      "size_gb": 5.2,
+      "speed_tps": 58.4,
+      "speed_zh_tps": 58.5,
+      "quant": "Q4_K_M",
+      "bits": 5.1,
+      "params_b": 8.19,
+      "placement": "gpu",
+      "notes": "Fits fully in a 12 GB GPU."
+    },
+    {
+      "id": "gemma4-26b-qat-moe",
+      "name": "Gemma 4 26B-A4B QAT (MoE offload)",
+      "backend": "llamacpp",
+      "model_path": "/path/to/gemma4-26b-a4b-it-qat.gguf",
+      "context": 8192,
+      "max_context": 262144,
+      "type": "moe",
+      "size_gb": 15,
+      "speed_tps": 45.0,
+      "speed_zh_tps": 45.1,
+      "quant": "Q4_0 (QAT)",
+      "bits": 4.58,
+      "params_b": 25.23,
+      "placement": "gpu+cpu",
+      "args": ["-ngl", "99", "-ncmoe", "11"],
+      "notes": "11 layers of experts on CPU, the rest on the GPU."
+    }
+  ]
+}

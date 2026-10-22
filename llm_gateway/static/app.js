@@ -1,0 +1,415 @@
+"use strict";
+
+const $ = (s) => document.querySelector(s);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("llmgw." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("llmgw." + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+};
+
+let profiles = [];
+let status = { active: null, status: "idle" };
+let convs = store.get("convs", []);
+let currentId = store.get("current", null);
+let abortCtl = null;
+let pendingActivate = null;
+const BUSY_MSG = "目前的模型正在使用或載入中(對話或 API 請求還在跑),完成前不能切換模型。";
+
+// ── helpers ───────────────────────────────────────────────────────────────
+function headers(json = true) {
+  const h = json ? { "Content-Type": "application/json" } : {};
+  const key = store.get("key", "");
+  if (key) h.Authorization = "Bearer " + key;
+  return h;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (r.status === 401) { showAuth(); throw new Error("需要 API key"); }
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 409) throw new Error(BUSY_MSG);
+  if (!r.ok) throw new Error(data?.error?.message || r.statusText);
+  return data;
+}
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtCtx = (n) => (n == null ? "—" : n >= 1024 ? Math.round(n / 1024) + "K" : String(n));
+const prof = (id) => profiles.find((p) => p.id === id);
+
+function banner(text, kind = "error") {
+  const b = $("#banner");
+  if (!text) { b.hidden = true; return; }
+  b.textContent = text; b.className = "banner" + (kind === "info" ? " info" : ""); b.hidden = false;
+}
+function showAuth() {
+  $("#keyRow").hidden = false;
+  banner("伺服器需要 API key。請到 API 頁輸入後儲存。");
+}
+
+// Minimal, safe markdown: HTML is escaped first; only a small set of constructs is rendered.
+function md(src) {
+  const parts = String(src).split(/```/);
+  return parts.map((seg, i) => {
+    if (i % 2 === 1) {
+      const nl = seg.indexOf("\n");
+      const code = nl >= 0 ? seg.slice(nl + 1) : seg;
+      return `<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`;
+    }
+    return seg.split(/\n{2,}/).map(block).join("");
+  }).join("");
+}
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+// Line-based: headings, rules and list runs can sit anywhere inside a paragraph block.
+function block(b) {
+  let html = "", para = [], list = null;
+  const flushPara = () => { if (para.length) { html += `<p>${para.map(inline).join("<br>")}</p>`; para = []; } };
+  const flushList = () => { if (list) { html += `<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`; list = null; } };
+  for (const line of b.split("\n")) {
+    const h = /^(#{1,4})\s+(.*)$/.exec(line);
+    const li = /^\s*([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (!line.trim()) { flushPara(); flushList(); }
+    else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushPara(); flushList(); html += "<hr>"; }
+    else if (h) { flushPara(); flushList(); const n = Math.min(h[1].length + 1, 4); html += `<h${n}>${inline(h[2])}</h${n}>`; }
+    else if (li) {
+      flushPara();
+      const tag = /\d/.test(li[1]) ? "ol" : "ul";
+      if (list && list.tag !== tag) flushList();
+      if (!list) list = { tag, items: [] };
+      list.items.push(li[2]);
+    } else { flushList(); para.push(line); }
+  }
+  flushPara(); flushList();
+  return html;
+}
+
+// ── tabs ──────────────────────────────────────────────────────────────────
+function showView(name) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === name));
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === "view-" + name));
+  store.set("view", name);
+}
+$("#tabs").addEventListener("click", (e) => { const v = e.target.closest("button")?.dataset.view; if (v) showView(v); });
+
+// ── status ────────────────────────────────────────────────────────────────
+function renderStatus() {
+  const p = prof(status.active);
+  const loadingP = prof(status.loading);
+  const dot = $("#activeDot");
+  dot.className = "dot " + (status.status === "ready" ? "ready" : status.status === "loading" ? "loading" : status.status === "error" ? "error" : "");
+  if (status.status === "loading" && loadingP) {
+    $("#activeName").textContent = "載入中:" + loadingP.name;
+    $("#activeMeta").textContent = loadingP.backend + " · context " + fmtCtx(loadingP.context);
+  } else if (p) {
+    $("#activeName").textContent = p.name;
+    const sp = p.speed_zh_tps || p.speed_tps;
+    $("#activeMeta").textContent = `${p.backend} · context ${fmtCtx(p.context)}${sp ? " · ~" + sp + " tok/s" : ""}`;
+  } else {
+    $("#activeName").textContent = status.status === "error" ? "載入失敗" : "尚未載入模型";
+    $("#activeMeta").textContent = "";
+  }
+  $("#unloadBtn").hidden = !status.active;
+  $("#unloadBtn").disabled = !!status.busy;
+  $("#unloadBtn").title = status.busy ? "模型使用中,完成前不能卸載" : "卸載目前的模型,釋放顯示卡";
+  if (status.status === "error" && status.error) banner("模型載入失敗:" + status.error);
+  else if ($("#banner").textContent.startsWith("模型載入失敗")) banner("");
+  const g = status.gpu;
+  $("#gpu").hidden = !g;
+  if (g) {
+    $("#gpuLabel").textContent = `${g.name.replace("NVIDIA GeForce ", "")} ${(g.memory_used_mb / 1024).toFixed(1)}/${(g.memory_total_mb / 1024).toFixed(0)} GB`;
+    $("#gpuFill").style.width = (100 * g.memory_used_mb / g.memory_total_mb).toFixed(0) + "%";
+  }
+  renderModels();
+  renderChatHead();
+}
+let offline = false;
+async function pollStatus() {
+  try {
+    status = await api("/api/status");
+    if (offline) { offline = false; banner(""); }
+    renderStatus();
+  } catch (e) {
+    if (e instanceof TypeError) { offline = true; banner("連不上 llm-gateway,正在重試…", "info"); }
+  }
+}
+$("#unloadBtn").addEventListener("click", async () => {
+  try { status = await api("/api/unload", { method: "POST" }); renderStatus(); } catch (e) { banner(e.message); }
+});
+
+// ── models page ───────────────────────────────────────────────────────────
+function renderModels() {
+  const list = $("#modelList");
+  list.innerHTML = profiles.map((p) => {
+    const active = p.id === status.active;
+    const loading = p.id === status.loading || p.id === pendingActivate;
+    const bar = (label, v) => v ? `<div class="speed"><span class="lbl">${label}</span><span class="track"><span class="fill${v < 30 ? " slow" : ""}" style="width:${Math.min(100, v / 80 * 100)}%"></span><span class="goal"></span></span><span class="val">${v} tok/s</span></div>` : "";
+    const busyNote = status.loading ? "其他模型正在載入,完成前不能切換" : "目前的模型正在使用中,完成前不能切換";
+    const btn = active ? `<button type="button" class="ghost" disabled>已載入</button>`
+      : loading ? `<button type="button" class="ghost" disabled>載入中…</button>`
+      : status.busy ? `<button type="button" class="ghost" disabled title="${busyNote}">使用中,不能切換</button>`
+      : `<button type="button" class="primary" data-activate="${esc(p.id)}">載入</button>`;
+    const quant = p.quant ? `<span>量化 <b>${esc(p.quant)}</b>${p.bits ? ` · 平均 ${p.bits} bit` : ""}</span>` : "";
+    const details = [
+      ["模型檔", p.model],
+      ["參數量", p.params_b ? `${p.params_b}B` : ""],
+      ["平均位元數", p.bits ? `${p.bits} bit/參數(檔案大小 ÷ 參數量,含未壓縮的詞嵌入等)` : ""],
+      ["啟動參數", p.args?.length ? p.args.join(" ") : ""],
+      ["說明", p.notes],
+    ].filter(([, v]) => v);
+    return `<article class="model${active ? " active" : ""}">
+      <div class="name">${esc(p.name)} <span class="id">${esc(p.id)}</span>
+        <span class="tag">${esc(p.backend)}</span>${p.type ? `<span class="tag">${p.type === "moe" ? "MoE" : "密集"}</span>` : ""}
+        ${p.placement ? `<span class="tag ${p.placement === "gpu" ? "on-gpu" : "on-cpu"}" title="${p.placement === "gpu" ? "整個模型都在顯示卡上" : "模型放不進顯示卡,一部分放在 CPU / 系統記憶體"}">${p.placement === "gpu" ? "GPU" : "GPU+CPU"}</span>` : ""}
+        ${active ? '<span class="tag on">已載入</span>' : ""}</div>
+      <div class="facts"><span>context <b>${fmtCtx(p.context)}</b>${p.max_context ? ` / 最大 ${fmtCtx(p.max_context)}` : ""}</span>
+        ${quant}${p.size_gb ? `<span>大小 <b>${p.size_gb} GB</b></span>` : ""}</div>
+      <div class="act">${btn}</div>
+      ${bar("中文對話", p.speed_zh_tps)}${bar("英文程式", p.speed_tps)}
+      ${details.length ? `<details class="more" data-id="${esc(p.id)}"${openDetails.has(p.id) ? " open" : ""}><summary>詳細資訊</summary>
+        <dl>${details.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>` : ""}
+    </article>`;
+  }).join("");
+}
+const openDetails = new Set();  // survive the 2-second re-render
+$("#modelList").addEventListener("toggle", (e) => {
+  const id = e.target.dataset?.id;
+  if (id) e.target.open ? openDetails.add(id) : openDetails.delete(id);
+}, true);
+$("#modelList").addEventListener("click", async (e) => {
+  const id = e.target.closest("[data-activate]")?.dataset.activate;
+  if (!id) return;
+  pendingActivate = id; renderModels(); banner("");
+  pollStatus();
+  try { status = await api("/api/activate", { method: "POST", body: JSON.stringify({ id }) }); }
+  catch (err) { banner(err.message === BUSY_MSG ? BUSY_MSG : "模型載入失敗:" + err.message, err.message === BUSY_MSG ? "info" : "error"); }
+  pendingActivate = null; pollStatus();
+});
+
+// ── chat ──────────────────────────────────────────────────────────────────
+function saveConvs() { store.set("convs", convs); store.set("current", currentId); }
+function current() { return convs.find((c) => c.id === currentId); }
+function newConv() {
+  const c = { id: Date.now().toString(36), title: "新對話", model: $("#chatModel").value || status.active, messages: [] };
+  convs.unshift(c); currentId = c.id; saveConvs(); renderConvs(); renderMessages();
+}
+function renderConvs() {
+  $("#convList").innerHTML = convs.map((c) => `<li class="${c.id === currentId ? "on" : ""}">
+    <button type="button" class="title" data-open="${c.id}">${esc(c.title)}</button>
+    <button type="button" class="del" data-del="${c.id}" aria-label="刪除">✕</button></li>`).join("");
+}
+$("#convList").addEventListener("click", (e) => {
+  const open = e.target.closest("[data-open]")?.dataset.open;
+  const del = e.target.closest("[data-del]")?.dataset.del;
+  if (open) { currentId = open; const c = current(); if (c?.model && prof(c.model)) $("#chatModel").value = c.model; saveConvs(); renderConvs(); renderMessages(); renderChatHead(); setConvsOpen(false); }
+  if (del) { convs = convs.filter((c) => c.id !== del); if (currentId === del) currentId = convs[0]?.id || null; saveConvs(); renderConvs(); renderMessages(); }
+});
+function setConvsOpen(open) {
+  $("#convs").classList.toggle("open", open);
+  $("#scrim").hidden = !open;
+}
+$("#newChat").addEventListener("click", () => { newConv(); setConvsOpen(false); $("#input").focus(); });
+$("#toggleConvs").addEventListener("click", () => setConvsOpen(!$("#convs").classList.contains("open")));
+$("#closeConvs").addEventListener("click", () => setConvsOpen(false));
+$("#scrim").addEventListener("click", () => setConvsOpen(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#convs").classList.contains("open")) setConvsOpen(false); });
+
+function renderChatHead() {
+  const sel = $("#chatModel");
+  if (!sel.options.length && profiles.length) {
+    sel.innerHTML = profiles.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+    const saved = store.get("model", null);
+    sel.value = (saved && prof(saved)) ? saved : (status.active || profiles[0].id);
+  }
+  const p = prof(sel.value);
+  if (!p) return;
+  const note = p.id === status.active ? "已載入" : "送出時會先切換";
+  const used = estimateTokens(current()?.messages || []);
+  const usedTxt = used ? `約 ${used >= 1024 ? (used / 1024).toFixed(1) + "K" : used} / ` : "";
+  $("#chatCtx").textContent = `context ${usedTxt}${fmtCtx(p.context)} · ${note}`;
+}
+// Same rough estimate the server uses: CJK chars ≈ 1 token, other text ≈ 3.5 chars per token.
+function estimateTokens(messages) {
+  return messages.reduce((sum, m) => {
+    const t = (m.content || "");
+    const cjk = (t.match(/[　-鿿가-힯豈-﫿＀-￯]/g) || []).length;
+    return sum + 6 + cjk + Math.round((t.length - cjk) / 3.5);
+  }, 0);
+}
+$("#thinkToggle").checked = store.get("think", false);
+$("#thinkToggle").addEventListener("change", () => store.set("think", $("#thinkToggle").checked));
+$("#chatModel").addEventListener("change", () => { store.set("model", $("#chatModel").value); const c = current(); if (c) { c.model = $("#chatModel").value; saveConvs(); } renderChatHead(); });
+
+function msgEl(m) {
+  const div = document.createElement("div");
+  div.className = "msg " + m.role;
+  if (m.role === "user") {
+    div.innerHTML = `<div class="body"></div>`;
+    div.querySelector(".body").textContent = m.content;
+  } else {
+    div.innerHTML = `${m.reasoning ? `<details class="think"><summary>思考過程</summary><div></div></details>` : ""}<div class="body${m.error ? " error" : ""}"></div><div class="meta"></div>`;
+    if (m.reasoning) div.querySelector(".think div").textContent = m.reasoning;
+    div.querySelector(".body").innerHTML = m.error ? esc(m.error) : md(m.content || "");
+    div.querySelector(".meta").textContent = m.meta || "";
+  }
+  return div;
+}
+function renderMessages() {
+  const box = $("#messages");
+  const c = current();
+  box.innerHTML = "";
+  if (!c || !c.messages.length) { box.innerHTML = $("#emptyTpl").innerHTML; return; }
+  c.messages.forEach((m) => box.appendChild(msgEl(m)));
+  box.scrollTop = box.scrollHeight;
+}
+
+async function send(text) {
+  let c = current();
+  if (!c) { newConv(); c = current(); }
+  const model = $("#chatModel").value;
+  c.model = model;
+  if (!c.messages.length) c.title = text.slice(0, 40);
+  c.messages.push({ role: "user", content: text });
+  const reply = { role: "assistant", content: "", reasoning: "", meta: "" };
+  c.messages.push(reply);
+  saveConvs(); renderConvs(); renderMessages();
+
+  const box = $("#messages");
+  const el = box.lastElementChild;
+  const body = el.querySelector(".body");
+  const metaEl = el.querySelector(".meta");
+  const p = prof(model);
+  if (model !== status.active) { metaEl.textContent = `正在載入 ${p?.name || model}…`; pollStatus(); }
+  body.classList.add("cursor");
+
+  const history = c.messages.slice(0, -1).filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
+  abortCtl = new AbortController();
+  $("#sendBtn").hidden = true; $("#stopBtn").hidden = false;
+  const t0 = performance.now();
+  let tFirst = null, nChunks = 0, usage = null, timings = null;
+  try {
+    const r = await fetch("/v1/chat/completions", {
+      method: "POST", headers: headers(), signal: abortCtl.signal,
+      body: JSON.stringify({ model, messages: history, stream: true, think: $("#thinkToggle").checked }),
+    });
+    if (r.status === 401) { showAuth(); throw new Error("需要 API key"); }
+    if (r.status === 409) throw new Error(BUSY_MSG);
+    if (!r.ok || !r.body) { const d = await r.json().catch(() => ({})); throw new Error(d?.error?.message || r.statusText); }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
+        if (line.startsWith(": llm-gateway ")) {  // server-side auto-compaction notice
+          try { reply.compacted = JSON.parse(line.slice(14)); } catch { /* ignore */ }
+          continue;
+        }
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        let j; try { j = JSON.parse(data); } catch { continue; }
+        if (j.error) throw new Error(j.error.message || "後端錯誤");
+        const d = j.choices?.[0]?.delta || {};
+        if (d.content || d.reasoning_content) {
+          if (tFirst == null) { tFirst = performance.now(); metaEl.textContent = ""; }
+          nChunks++;
+        }
+        if (d.reasoning_content) reply.reasoning += d.reasoning_content;
+        if (d.content) reply.content += d.content;
+        if (j.usage) usage = j.usage;
+        if (j.timings) timings = j.timings;
+        if (d.content || d.reasoning_content) {
+          if (reply.reasoning && !el.querySelector(".think")) {
+            const det = document.createElement("details"); det.className = "think";
+            det.innerHTML = "<summary>思考過程</summary><div></div>"; el.insertBefore(det, body);
+          }
+          if (reply.reasoning) {
+            el.querySelector(".think div").textContent = reply.reasoning;
+            el.querySelector(".think summary").textContent = reply.content ? "思考過程" : `思考中…(已 ${reply.reasoning.length} 字)`;
+          }
+          body.innerHTML = md(reply.content);
+          box.scrollTop = box.scrollHeight;
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") reply.meta = "已停止";
+    else { reply.error = "錯誤:" + e.message; }
+  } finally {
+    const secs = tFirst ? (performance.now() - tFirst) / 1000 : 0;
+    const n = timings?.predicted_n || usage?.completion_tokens || nChunks;
+    const tps = timings?.predicted_per_second || (secs > 0 ? n / secs : null);
+    if (!reply.error && !reply.meta) {
+      reply.meta = `${p?.name || model} · ${n} tokens${tps ? ` · ${tps.toFixed(1)} tok/s` : ""}${tFirst ? ` · 首字 ${((tFirst - t0) / 1000).toFixed(1)}s` : ""}`;
+    }
+    if (reply.compacted) {
+      reply.meta = `${reply.meta ? reply.meta + " · " : ""}對話超過 context,已自動摘要較早的 ${reply.compacted.compacted_messages} 則訊息`;
+    }
+    abortCtl = null;
+    $("#sendBtn").hidden = false; $("#stopBtn").hidden = true;
+    saveConvs(); renderMessages(); pollStatus();
+  }
+}
+$("#composer").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = $("#input").value.trim();
+  if (!text || abortCtl) return;
+  $("#input").value = ""; autosize();
+  send(text);
+});
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#composer").requestSubmit(); }
+});
+function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }
+$("#input").addEventListener("input", autosize);
+$("#stopBtn").addEventListener("click", () => abortCtl?.abort());
+
+// ── API page ──────────────────────────────────────────────────────────────
+function renderApi() {
+  const base = location.origin;
+  $("#baseUrl").textContent = base + "/v1";
+  const auth = store.get("key", "") ? ' -H "Authorization: Bearer $LLM_GATEWAY_KEY"' : "";
+  const example = profiles[0]?.id || "qwen3-8b";
+  const eps = [
+    { m: "GET", p: "/v1/models", d: "列出所有可用模型(含 context 大小、是否載入中)。", c: `curl ${base}/v1/models${auth}` },
+    { m: "POST", p: "/v1/chat/completions", d: "對話。model 和目前載入的不同時,會自動切換(等前面的請求跑完)。支援 stream。", c: `curl ${base}/v1/chat/completions${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${example}", "stream": true,\n       "messages": [{"role": "user", "content": "你好"}]}'` },
+    { m: "GET", p: "/api/status", d: "目前載入的模型、狀態(idle / loading / ready / error)、顯示卡記憶體。", c: `curl ${base}/api/status${auth}` },
+    { m: "POST", p: "/api/activate", d: "預先載入某個模型(會卸載目前的)。", c: `curl -X POST ${base}/api/activate${auth} \\\n  -H "Content-Type: application/json" -d '{"id": "${example}"}'` },
+    { m: "POST", p: "/api/unload", d: "卸載目前的模型,釋放顯示卡。", c: `curl -X POST ${base}/api/unload${auth}` },
+    { m: "PY", p: "OpenAI Python SDK", d: "任何 OpenAI 相容的工具都能這樣接。", c: `from openai import OpenAI\nclient = OpenAI(base_url="${base}/v1", api_key="${store.get("key", "") ? "<your key>" : "none"}")\nr = client.chat.completions.create(\n    model="${example}",\n    messages=[{"role": "user", "content": "你好"}],\n)\nprint(r.choices[0].message.content)` },
+  ];
+  $("#endpoints").innerHTML = eps.map((e, i) => `<div class="ep">
+    <div class="ep-head"><span class="method${e.m === "POST" ? " post" : ""}">${e.m}</span><code>${esc(e.p)}</code></div>
+    <p>${esc(e.d)}</p><pre id="ep${i}">${esc(e.c)}</pre>
+    <button type="button" class="ghost copy" data-copy="#ep${i}">複製</button></div>`).join("");
+}
+document.addEventListener("click", async (e) => {
+  const sel = e.target.closest("[data-copy]")?.dataset.copy;
+  if (!sel) return;
+  const text = $(sel).textContent;
+  const btn = e.target.closest("button");
+  try { await navigator.clipboard.writeText(text); btn.textContent = "已複製"; }
+  catch { const r = document.createRange(); r.selectNodeContents($(sel)); const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "已選取,請按 Ctrl+C"; }
+  setTimeout(() => (btn.textContent = "複製"), 1500);
+});
+$("#saveKey").addEventListener("click", () => { store.set("key", $("#apiKey").value.trim()); banner(""); init(); });
+
+// ── boot ──────────────────────────────────────────────────────────────────
+async function init() {
+  const tpl = document.createElement("template"); tpl.id = "emptyTpl"; tpl.innerHTML = $("#emptyState")?.outerHTML || ""; if (!$("#emptyTpl")) document.body.appendChild(tpl);
+  try {
+    profiles = (await api("/api/profiles")).profiles;
+    status = await api("/api/status");
+    $("#keyRow").hidden = !status.auth_required;
+  } catch (e) { if (e.message !== "需要 API key") banner("連不上 llm-gateway:" + e.message); return; }
+  renderChatHead(); renderStatus(); renderConvs(); renderMessages(); renderApi();
+}
+showView(store.get("view", "chat"));
+init();
+setInterval(pollStatus, 2000);

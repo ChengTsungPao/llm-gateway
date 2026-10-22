@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1412">
+<title>llm-gateway</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="application-name" content="llm-gateway">
+<meta name="apple-mobile-web-app-title" content="llm-gateway">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo" aria-hidden="true">▚</span>llm-gateway</div>
+  <div class="active-pill" id="activePill" title="目前載入的模型">
+    <span class="dot" id="activeDot"></span>
+    <span class="active-text"><span id="activeName">尚未載入模型</span><small id="activeMeta"></small></span>
+  </div>
+  <div class="gpu" id="gpu" hidden>
+    <span class="gpu-label" id="gpuLabel">GPU</span>
+    <span class="meter"><span class="meter-fill" id="gpuFill"></span></span>
+  </div>
+  <button class="ghost" id="unloadBtn" type="button" hidden>卸載</button>
+</header>
+
+<nav class="tabs" id="tabs" aria-label="頁面">
+  <button type="button" data-view="chat" class="on">對話</button>
+  <button type="button" data-view="models">模型</button>
+  <button type="button" data-view="api">API</button>
+</nav>
+
+<div class="banner" id="banner" hidden></div>
+
+<main>
+  <!-- Chat -->
+  <section class="view chat-view on" id="view-chat">
+    <div class="scrim" id="scrim" hidden></div>
+    <aside class="convs" id="convs">
+      <div class="convs-head">
+        <button type="button" class="primary block" id="newChat">＋ 新對話</button>
+        <button type="button" class="ghost icon close-convs" id="closeConvs" aria-label="關閉對話列表">✕</button>
+      </div>
+      <ul id="convList"></ul>
+    </aside>
+    <div class="chat">
+      <div class="chat-head">
+        <button type="button" class="ghost icon" id="toggleConvs" aria-label="對話列表">☰</button>
+        <label class="model-select">
+          <span class="sr">模型</span>
+          <select id="chatModel"></select>
+        </label>
+        <span class="chip" id="chatCtx"></span>
+        <label class="think-toggle" title="關掉可以更快得到回答;模型不支援思考時沒有作用"><input type="checkbox" id="thinkToggle"> 思考</label>
+      </div>
+      <div class="messages" id="messages">
+        <div class="empty" id="emptyState">
+          <h2>開始對話</h2>
+          <p>選一個模型就可以開始。如果它不是目前載入的模型,送出時會先自動切換,大模型需要幾十秒到幾分鐘。</p>
+        </div>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="輸入訊息,Enter 送出,Shift+Enter 換行" aria-label="訊息"></textarea>
+        <button type="submit" class="primary" id="sendBtn">送出</button>
+        <button type="button" class="danger" id="stopBtn" hidden>停止</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Models -->
+  <section class="view" id="view-models">
+    <div class="page">
+      <div class="page-head">
+        <h1>模型</h1>
+        <p>一次只會載入一個模型。載入新模型時,會先卸載目前的模型。速度是透過這個閘道實測的生成速度(tok/s),分成中文對話和英文寫程式兩種題目,因為推測解碼這類加速對不同內容效果差很多。虛線是 30 tok/s。可以用 <code>scripts/measure.py</code> 重新量測。</p>
+      </div>
+      <div class="model-list" id="modelList"></div>
+    </div>
+  </section>
+
+  <!-- API -->
+  <section class="view" id="view-api">
+    <div class="page">
+      <div class="page-head">
+        <h1>API</h1>
+        <p>OpenAI 相容。任何支援 OpenAI API 的工具,把 base URL 設成下面這個位址就能用;<code>model</code> 填模型頁上的 ID。</p>
+      </div>
+      <div class="base-url">
+        <span class="label">Base URL</span>
+        <code id="baseUrl"></code>
+        <button type="button" class="ghost" data-copy="#baseUrl">複製</button>
+      </div>
+      <div class="key-row" id="keyRow" hidden>
+        <label for="apiKey">API Key</label>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="伺服器有設定 api_key,請輸入">
+        <button type="button" class="primary" id="saveKey">儲存</button>
+      </div>
+      <div class="endpoints" id="endpoints"></div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
