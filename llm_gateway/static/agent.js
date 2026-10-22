@@ -44,7 +44,7 @@ async function agInit() {
     $("#agComposer").hidden = true; $("#agWorkspaceRow").hidden = true; $(".agent-head").hidden = true;
     return;
   }
-  $("#agModel").innerHTML = ag.info.models.map((m) => modelOption(m.id, m.name, m.context, "")).join("")
+  $("#agModel").innerHTML = byName(ag.info.models).map((m) => modelOption(m.id, m.name, m.context, "")).join("")
     || `<option value="">No model is marked "tools": true</option>`;
   $("#agModel").value = store.get("agModel", ag.info.models[0]?.id || "");
   if (!$("#agModel").value && ag.info.models[0]) $("#agModel").value = ag.info.models[0].id;

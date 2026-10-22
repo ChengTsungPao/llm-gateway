@@ -321,7 +321,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#conv
 function renderChatHead() {
   const sel = $("#chatModel");
   if (!sel.options.length && profiles.length) {
-    sel.innerHTML = profiles.map((p) => modelOption(p.id, p.name, p.context,
+    sel.innerHTML = byName(profiles).map((p) => modelOption(p.id, p.name, p.context,
       [p.backend, p.quant, p.speed_zh_tps ? `~${p.speed_zh_tps} tok/s` : ""].filter(Boolean).join(" · "))).join("");
     const saved = store.get("model", null);
     sel.value = (saved && prof(saved)) ? saved : (status.active || profiles[0].id);
@@ -333,6 +333,8 @@ function renderChatHead() {
   const usedTxt = used ? `~${used >= 1024 ? (used / 1024).toFixed(1) + "K" : used} / ` : "";
   $("#chatCtx").textContent = `context ${usedTxt}${fmtCtx(p.context)} · ${note}`;
 }
+// Model menus list models alphabetically ("Qwen3 8B" before "Qwen3 14B": numbers compare as numbers).
+const byName = (list) => [...list].sort((x, y) => x.name.localeCompare(y.name, undefined, { numeric: true }));
 // Closed menu: "Qwen3 8B · 32K"; open menu: the full name plus a hint line.
 function modelOption(id, name, context, hint) {
   const short = `${name.split(" · ")[0]} · ${fmtCtx(context)}`;
@@ -488,7 +490,7 @@ function renderApi() {
   const auth = store.get("key", "") ? ' -H "Authorization: Bearer $LLM_GATEWAY_KEY"' : "";
   const sel = $("#apiModel");
   if (!sel.options.length && profiles.length) {
-    sel.innerHTML = profiles.map((p) => modelOption(p.id, p.name, p.context,
+    sel.innerHTML = byName(profiles).map((p) => modelOption(p.id, p.name, p.context,
       [p.tools ? "agent / coding tools" : "", p.speed_zh_tps ? `~${p.speed_zh_tps} tok/s` : ""].filter(Boolean).join(" · "))).join("");
     sel.value = store.get("apiModel", status.active || profiles[0].id);
     if (!sel.value) sel.value = profiles[0].id;
