@@ -75,9 +75,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); p
 .meter { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .meter-fill { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s; }
 .meter-fill.hot { background: var(--warn); }
-/* GPU queue list (Models page and Resources panel) */
-.jobs-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
-.jobs-card h2 { margin: 0 0 8px; font-size: .95rem; }
+/* GPU queue list (Resources panel) */
 .jobs { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .job { display: grid; grid-template-columns: 4.8em 1fr; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 8px; font-size: .86rem; min-width: 0; }
 .job:not(.running) { border-bottom: 1px solid var(--line); border-radius: 0; }

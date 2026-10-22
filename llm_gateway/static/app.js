@@ -116,7 +116,6 @@ function renderStatus() {
   if (status.status === "error" && status.error) banner("Model failed to load: " + status.error);
   else if ($("#banner").textContent.startsWith("Model failed to load")) banner("");
   renderResources();
-  $("#jobList").innerHTML = jobRows();
   renderModels();
   renderChatHead();
 }
