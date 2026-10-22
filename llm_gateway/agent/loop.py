@@ -160,6 +160,15 @@ class Agent:
             if not completion.tool_calls:
                 if completion.finish_reason == "length":
                     yield Notice("warn", "The answer was cut off (output token limit).")
+                elif not completion.content.strip() and nudges < 2:
+                    # Neither text nor a tool call: usually a tool call the server could not parse
+                    # and dropped. Ask once more instead of ending the task with nothing.
+                    nudges += 1
+                    yield Notice("info", "The model returned an empty reply; asking it to continue.")
+                    self.session.messages.append({"role": "user", "content": "Your last reply was empty. Continue "
+                                                  "the task: call a tool, or give your final answer."})
+                    self.checkpoint()
+                    continue
                 elif errors.announces_unfinished_work(completion.content) and nudges < 2:
                     nudges += 1    # "Let me fix it now." with no tool call: tell the model to do it
                     yield Notice("info", "The model announced an action without doing it; asking it to continue.")

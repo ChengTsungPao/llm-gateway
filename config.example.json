@@ -40,7 +40,7 @@
   "profiles": [
     {
       "id": "qwen3-8b-agent",
-      "name": "Qwen3 8B · Agent 32K",
+      "name": "Qwen3 8B · 32K",
       "backend": "ollama",
       "model": "qwen3:8b",
       "context": 32768,
@@ -49,7 +49,7 @@
     },
     {
       "id": "qwen3-8b",
-      "name": "Qwen3 8B",
+      "name": "Qwen3 8B · 8K",
       "backend": "ollama",
       "model": "qwen3:8b",
       "context": 8192,
@@ -66,7 +66,7 @@
     },
     {
       "id": "gemma4-26b-qat-moe",
-      "name": "Gemma 4 26B-A4B QAT (MoE offload)",
+      "name": "Gemma 4 26B-A4B QAT (MoE offload) · 8K",
       "backend": "llamacpp",
       "model_path": "${GGUF_DIR}/gemma4-26b-a4b-it-qat.gguf",
       "context": 8192,

@@ -160,6 +160,13 @@ async def test_announced_but_not_done_gets_a_nudge(tmp_path):
     assert not errors.announces_unfinished_work("The tests pass. Let me know if you need anything else")
 
 
+async def test_empty_reply_gets_one_more_try(tmp_path):
+    llm = FakeLLM(Completion(content=""), Completion(content="The answer is 42."))
+    events = await collect(make_agent(tmp_path, llm), "question")
+    assert any(isinstance(e, Notice) and "empty reply" in e.text for e in events)
+    assert events[-1].reason == "done" and events[-1].steps == 2
+
+
 async def test_step_budget(tmp_path):
     llm = FakeLLM(*[Completion(tool_calls=[call("glob", {"pattern": f"*.{i}"}, f"c{i}")]) for i in range(5)])
     events = await collect(make_agent(tmp_path, llm, max_steps=3), "loop forever")

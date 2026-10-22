@@ -100,6 +100,7 @@ function showView(name) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === "view-" + name));
   store.set("view", name);
+  renderResources();
 }
 $("#tabs").addEventListener("click", (e) => { const v = e.target.closest("button")?.dataset.view; if (v) showView(v); });
 
@@ -144,6 +145,7 @@ function renderResources() {
   }
   const box = $("#res");
   const open = store.get("resOpen", false);      // collapsed until the user opens it
+  const onModels = store.get("view", "chat") === "models";   // the GPU queue is shown only on the Models page
   $("#resToggle").hidden = !meters.length;
   $("#resToggle").textContent = open ? "Resources ▾" : "Resources ▸";
   $("#resToggle").setAttribute("aria-expanded", String(open));
@@ -151,8 +153,8 @@ function renderResources() {
   box.innerHTML = meters.map((m) => `<div class="res-item" title="${esc(m.t)}">
     <span class="res-k">${m.k}</span><span class="res-v">${m.v}</span>
     <span class="meter"><span class="meter-fill${m.pct >= 90 ? " hot" : ""}" style="width:${Math.min(100, m.pct).toFixed(0)}%"></span></span></div>`).join("")
-    + renderQueue();
-  const n = (status.queue?.length || 0) + (status.tasks?.waiting?.length || 0);
+    + (onModels ? renderQueue() : "");
+  const n = onModels ? (status.queue?.length || 0) + (status.tasks?.waiting?.length || 0) : 0;
   $("#resToggle").innerHTML = (open ? "Resources ▾" : "Resources ▸") +
     (n ? `<span class="badge" title="${n} waiting for the GPU or to start">${n}</span>` : "");
 }
@@ -210,7 +212,7 @@ $("#unloadBtn").addEventListener("click", async () => {
 // ── models page ───────────────────────────────────────────────────────────
 function renderModels() {
   const list = $("#modelList");
-  list.innerHTML = profiles.map((p) => {
+  list.innerHTML = byName(profiles).map((p) => {
     const active = p.id === status.active;
     const loading = p.id === status.loading || p.id === pendingActivate;
     const bar = (label, v) => v ? `<div class="speed"><span class="lbl">${label}</span><span class="track"><span class="fill${v < 30 ? " slow" : ""}" style="width:${Math.min(100, v / 80 * 100)}%"></span><span class="goal"></span></span><span class="val">${v} tok/s</span></div>` : "";

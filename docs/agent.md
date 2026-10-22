@@ -105,6 +105,8 @@ These guards wrap the whole loop:
 - **Announced but not done** (`errors.announces_unfinished_work`). Small models often end with
   "Let me fix this now." and no tool call. The loop answers "Go ahead", at most twice per turn.
   It does not when the reply asks the user a question.
+- **Empty reply.** Neither text nor a tool call (usually a tool call the server could not parse and
+  dropped). The loop asks once more instead of ending the task with nothing.
 - **Failed, not broken.** A command that runs but exits non-zero returns `ToolOutput(text, ok=False)`.
   The model sees the output, the UI shows ✗, and the circuit breaker does not count it.
 - **Timeouts.** `bash` takes a `timeout` of up to 30 minutes. Network git commands get 15 minutes.
@@ -374,6 +376,10 @@ test, with no GPU needed:
 - streamed tool-call assembly
 - compaction
 - the web API's access rules
+
+Beyond unit tests, `scripts/agent_eval.py` measures how well a *model* works as an agent: 6 real
+tasks × 3 runs, each checked automatically. Results and method:
+[agent-eval.md](agent-eval.md). This evaluation decides which models get `"tools": true`.
 
 Other test files:
 
