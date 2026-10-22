@@ -29,8 +29,8 @@
 <nav class="tabs" id="tabs" aria-label="Pages">
   <button type="button" data-view="chat" class="on">Chat</button>
   <button type="button" data-view="agent">Agent</button>
-  <button type="button" data-view="models">Models</button>
   <button type="button" data-view="api">API</button>
+  <button type="button" data-view="models">Models</button>
 </nav>
 
 <div class="banner" id="banner" hidden></div>
@@ -131,6 +131,11 @@
         <label for="apiKey">API Key</label>
         <input id="apiKey" type="password" autocomplete="off" placeholder="The server has an api_key; enter it here">
         <button type="button" class="primary" id="saveKey">Save</button>
+      </div>
+      <div class="base-url api-model">
+        <span class="label">Model</span>
+        <label class="model-select"><span class="sr">Model for the examples</span><select id="apiModel"></select></label>
+        <span class="chip" id="apiModelNote"></span>
       </div>
       <div class="endpoints" id="endpoints"></div>
     </div>

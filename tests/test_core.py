@@ -6,7 +6,7 @@ import pytest
 
 from llm_gateway.backends import Backend, BackendError, LlamaCppBackend, _is_pinned, _same_model
 from llm_gateway.config import ConfigError, load_config
-from llm_gateway.manager import ModelBusy, ModelManager
+from llm_gateway.manager import ModelManager
 
 
 def write_config(tmp_path: Path, profiles: list[dict], **extra) -> Path:
@@ -115,35 +115,6 @@ async def test_only_one_model_loaded(manager):
     await manager.activate("b")
     assert FakeBackend.log == ["load a", "unload a", "load b"]
     assert manager.active_id == "b" and manager.status == "ready"
-
-
-async def test_no_switch_while_model_in_use(manager):
-    async with manager.use("a"):
-        assert manager.snapshot()["busy"]
-        with pytest.raises(ModelBusy):
-            await manager.activate("b")
-        with pytest.raises(ModelBusy):
-            async with manager.use("b"):
-                pass
-        with pytest.raises(ModelBusy):
-            await manager.unload()
-        async with manager.use("a"):  # same model: concurrent use is fine
-            pass
-    await manager.activate("b")  # idle again: switching works
-    assert manager.active_id == "b"
-
-
-async def test_no_switch_while_loading(manager):
-    async def slow_load():
-        await manager.activate("a")
-
-    task = asyncio.create_task(slow_load())
-    await asyncio.sleep(0)  # let it start loading
-    assert manager.status == "loading"
-    with pytest.raises(ModelBusy):
-        await manager.activate("b")
-    await task
-    assert manager.active_id == "a"
 
 
 async def test_forced_unload_waits_instead_of_refusing(manager):

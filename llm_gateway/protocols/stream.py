@@ -16,7 +16,7 @@ import asyncio
 import codecs
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 from ..backends import BackendError
@@ -104,16 +104,18 @@ async def events(pieces: AsyncIterator[bytes]) -> AsyncIterator[Event]:
     yield finish
 
 
-async def with_heartbeat(source: AsyncIterator[bytes], beat: bytes, every_s: float = 10) -> AsyncIterator[bytes]:
-    """Pass `source` through, inserting `beat` whenever it is silent for `every_s` seconds.
-    Loading a model or reading a long prompt can take minutes; clients drop silent streams."""
+async def with_heartbeat(source: AsyncIterator[bytes], beat: bytes | Callable[[], bytes],
+                         every_s: float = 10) -> AsyncIterator[bytes]:
+    """Pass `source` through, inserting `beat` (bytes, or a function returning them) whenever it is
+    silent for `every_s` seconds. Waiting in the queue, loading a model or reading a long prompt can
+    take minutes; clients drop silent streams."""
     it = source.__aiter__()
     pending = asyncio.ensure_future(it.__anext__())
     try:
         while True:
             done, _ = await asyncio.wait({pending}, timeout=every_s)
             if not done:
-                yield beat
+                yield beat() if callable(beat) else beat
                 continue
             try:
                 item = pending.result()

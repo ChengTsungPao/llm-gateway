@@ -136,7 +136,10 @@ async function agOpen(id) {
   $("#agMode").value = ag.cur.mode;
   agSetWorkspace(ag.cur.host_folder || ag.cur.workspace);
   agRenderTodos(ag.cur.todos);
-  if (ag.cur.running) {
+  if (ag.cur.queued) {
+    agRenderHistory(ag.cur.messages);
+    agWaitStart(id);
+  } else if (ag.cur.running) {
     // Show the history before the running turn, then replay the turn's events from the start.
     const msgs = ag.cur.messages;
     let start = msgs.length;
@@ -259,6 +262,25 @@ function agHandle(ev) {
 }
 
 // ── streaming a turn ──────────────────────────────────────────────────────
+// A task waiting for its turn (agent/dispatch.py): show only a typing cursor and check every
+// 2 s; the queue order itself is shown in the Resources panel.
+async function agWaitStart(id) {
+  agBusy(true);
+  const pending = agAdd(agEl("msg assistant", `<div class="body cursor"></div>`));
+  try {
+    for (;;) {
+      await new Promise((res) => setTimeout(res, 2000));
+      if (ag.cur?.id !== id) return;
+      const s = await agApi(`/api/agent/sessions/${id}`);
+      if (s.queued) continue;
+      pending.remove();
+      if (s.start_error) { agAdd(agEl("notice error", esc(s.start_error))); agBusy(false); return; }
+      if (s.running) { agAttach(0); return; }
+      agBusy(false); return;                            // cancelled while waiting
+    }
+  } catch (e) { pending.remove(); agAdd(agEl("notice error", esc(e.message))); agBusy(false); }
+}
+
 function agBusy(on) { $("#agSend").hidden = on; $("#agStop").hidden = !on; $("#agModel").disabled = on; $("#agWorkspace").disabled = on || agPods(); }
 function agDetach() { try { ag.reader?.cancel(); } catch { /* already closed */ } ag.reader = null; }
 
@@ -313,8 +335,9 @@ async function agSend(prompt) {
     }
     ag.text = null;
     agUser(prompt);
-    await agApi(`/api/agent/sessions/${ag.cur.id}/turn`, { method: "POST", body: JSON.stringify({ prompt }) });
-    agAttach(0);
+    const r = await agApi(`/api/agent/sessions/${ag.cur.id}/turn`, { method: "POST", body: JSON.stringify({ prompt }) });
+    if (r.position > 0) agWaitStart(ag.cur.id);        // another agent task runs first (see Resources)
+    else agAttach(0);
   } catch (e) {
     agAdd(agEl("notice error", esc(e.message)));
   }

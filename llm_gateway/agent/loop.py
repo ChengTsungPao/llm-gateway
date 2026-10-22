@@ -32,7 +32,7 @@ from . import errors
 from .context import ContextManager, build_system_prompt
 from .events import Event, Notice, PermissionRequest, TodoUpdate, ToolCall, ToolResult, TurnEnd
 from .hooks import HookOutcome, Hooks
-from .llm import Completion, LLMClient, LLMError
+from .llm import Completion, LLMClient, LLMError, QueueWait
 from .permissions import Approver, Decision, PermissionPolicy
 from .session import Session, SessionStore
 from .skills import Skill
@@ -88,7 +88,16 @@ class Agent:
             self.store.save(self.session)
 
     async def run(self, prompt: str) -> AsyncIterator[Event]:
-        """One user turn: loop Call LLM <-> Run tools until the model answers without tool calls."""
+        """One user turn: loop Call LLM <-> Run tools until the model answers without tool calls.
+        The turn holds a lease on its model (manager.py), returned when the turn ends in any way."""
+        self.llm.lease = f"agent-{self.session.id}"
+        try:
+            async for event in self._turn(prompt):
+                yield event
+        finally:
+            await self.llm.release_lease()
+
+    async def _turn(self, prompt: str) -> AsyncIterator[Event]:
         if not self._started and self.hooks:
             self._started = True
             outcome = await self.hooks.run("SessionStart", {"session_id": self.session.id})
@@ -134,6 +143,8 @@ class Agent:
                                                   schemas, think=self.settings.think):
                     if isinstance(item, Completion):
                         completion = item
+                    elif isinstance(item, QueueWait):
+                        pass               # queue position: shown in the UI's Resources panel instead
                     else:
                         yield item
             except LLMError as e:

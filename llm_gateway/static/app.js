@@ -140,7 +140,36 @@ function renderResources() {
   box.hidden = !meters.length || !open;
   box.innerHTML = meters.map((m) => `<div class="res-item" title="${esc(m.t)}">
     <span class="res-k">${m.k}</span><span class="res-v">${m.v}</span>
-    <span class="meter"><span class="meter-fill${m.pct >= 90 ? " hot" : ""}" style="width:${Math.min(100, m.pct).toFixed(0)}%"></span></span></div>`).join("");
+    <span class="meter"><span class="meter-fill${m.pct >= 90 ? " hot" : ""}" style="width:${Math.min(100, m.pct).toFixed(0)}%"></span></span></div>`).join("")
+    + renderQueue();
+  const n = (status.queue?.length || 0) + (status.tasks?.waiting?.length || 0);
+  $("#resToggle").innerHTML = (open ? "Resources ▾" : "Resources ▸") +
+    (n ? `<span class="badge" title="${n} waiting for the GPU or to start">${n}</span>` : "");
+}
+
+// The GPU scheduler's state (manager.py + agent/dispatch.py), shown only in the Resources panel.
+function who(item) {
+  const name = prof(item.model)?.name || item.model;
+  const by = item.title ? `Agent “${item.title}”` : { chat: "Chat", agent: "Agent", api: "API client", admin: "Model load" }[item.source] || item.source;
+  return `${esc(by)} · ${esc(name)}`;
+}
+function renderQueue() {
+  const run = status.running, queue = status.queue || [], leases = status.leases || [];
+  const tasks = status.tasks || { running: [], waiting: [] };
+  const rows = [];
+  rows.push(`<div class="q-row"><span class="q-k">Running</span><span>${run ? "▶ " + who(run) : "— idle"}</span></div>`);
+  if (leases.length) {
+    rows.push(`<div class="q-row"><span class="q-k">Reserved</span><span>${leases.map((l) =>
+      `${esc(l.title ? `Agent “${l.title}”` : l.id)} keeps ${esc(prof(l.model)?.name || l.model)}`).join("<br>")}</span></div>`);
+  }
+  rows.push(`<div class="q-row"><span class="q-k">GPU queue</span><span>${queue.length ? `<ol>${queue.map((q) =>
+    `<li>${who(q)} · ${q.waiting_s}s</li>`).join("")}</ol>` : "— empty"}</span></div>`);
+  if (tasks.running.length || tasks.waiting.length) {
+    rows.push(`<div class="q-row"><span class="q-k">Agent tasks</span><span>${tasks.running.map((r) =>
+      `▶ ${esc(r.title)}`).join("<br>")}${tasks.waiting.length ? `<ol>${tasks.waiting.map((w) =>
+      `<li>${esc(w.title)} · ${w.waiting_s}s</li>`).join("")}</ol>` : ""}</span></div>`);
+  }
+  return `<div class="res-queue">${rows.join("")}</div>`;
 }
 
 $("#resToggle").addEventListener("click", () => { store.set("resOpen", !store.get("resOpen", false)); renderResources(); });
@@ -351,7 +380,7 @@ async function send(text) {
   let tFirst = null, nChunks = 0, usage = null, timings = null;
   try {
     const r = await fetch("/v1/chat/completions", {
-      method: "POST", headers: headers(), signal: abortCtl.signal,
+      method: "POST", headers: { ...headers(), "X-LLM-Gateway-Source": "chat" }, signal: abortCtl.signal,
       body: JSON.stringify({ model, messages: history, stream: true, think: $("#thinkToggle").checked }),
     });
     if (r.status === 401) { showAuth(); throw new Error("API key required"); }
@@ -436,13 +465,36 @@ function renderApi() {
   const base = location.origin;
   $("#baseUrl").textContent = base + "/v1";
   const auth = store.get("key", "") ? ' -H "Authorization: Bearer $LLM_GATEWAY_KEY"' : "";
-  const example = profiles[0]?.id || "qwen3-8b";
+  const sel = $("#apiModel");
+  if (!sel.options.length && profiles.length) {
+    sel.innerHTML = profiles.map((p) => modelOption(p.id, p.name, p.context,
+      [p.tools ? "agent / coding tools" : "", p.speed_zh_tps ? `~${p.speed_zh_tps} tok/s` : ""].filter(Boolean).join(" · "))).join("");
+    sel.value = store.get("apiModel", status.active || profiles[0].id);
+    if (!sel.value) sel.value = profiles[0].id;
+  }
+  const example = sel.value || profiles[0]?.id || "qwen3-8b";
+  $("#apiModelNote").textContent = `id: ${example} · used in the examples below`;
   const eps = [
     { m: "GET", p: "/v1/models", d: "List all models, with context size and whether each is loaded.", c: `curl ${base}/v1/models${auth}` },
-    { m: "POST", p: "/v1/chat/completions", d: "Chat. If model differs from the loaded one, the gateway switches to it (refused with 409 while another model is in use). Streaming supported.", c: `curl ${base}/v1/chat/completions${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${example}", "stream": true,\n       "messages": [{"role": "user", "content": "Hello"}]}'` },
+    { m: "POST", p: "/v1/chat/completions", d: "Chat. If model differs from the loaded one, the gateway switches to it. While the GPU is busy the request waits in the queue (see Resources). Streaming supported.", c: `curl ${base}/v1/chat/completions${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${example}", "stream": true,\n       "messages": [{"role": "user", "content": "Hello"}]}'` },
     { m: "GET", p: "/api/status", d: "Loaded model, state (idle / loading / ready / error) and GPU memory.", c: `curl ${base}/api/status${auth}` },
     { m: "POST", p: "/api/activate", d: "Load a model ahead of time (unloads the current one).", c: `curl -X POST ${base}/api/activate${auth} \\\n  -H "Content-Type: application/json" -d '{"id": "${example}"}'` },
     { m: "POST", p: "/api/unload", d: "Unload the current model and free the GPU.", c: `curl -X POST ${base}/api/unload${auth}` },
+    { m: "ENV", p: "Claude Code (/v1/messages)", d: "Anthropic Messages API. Pick a model with a large context (64K): Claude Code's prompt and tools alone are ~20K tokens.", c: `ANTHROPIC_BASE_URL=${base}
+ANTHROPIC_AUTH_TOKEN=local
+ANTHROPIC_MODEL=${example}
+ANTHROPIC_DEFAULT_HAIKU_MODEL=${example}
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=${prof(example)?.context || 65536}
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+CLAUDE_CODE_ATTRIBUTION_HEADER=0` },
+    { m: "TOML", p: "Codex (/v1/responses)", d: "OpenAI Responses API, in ~/.codex/config.toml.", c: `model = "${example}"
+model_provider = "llmgw"
+model_context_window = ${prof(example)?.context || 65536}
+
+[model_providers.llmgw]
+name = "llm-gateway"
+base_url = "${base}/v1"
+wire_api = "responses"` },
     { m: "PY", p: "OpenAI Python SDK", d: "Any OpenAI-compatible tool connects the same way.", c: `from openai import OpenAI\nclient = OpenAI(base_url="${base}/v1", api_key="${store.get("key", "") ? "<your key>" : "none"}")\nr = client.chat.completions.create(\n    model="${example}",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(r.choices[0].message.content)` },
   ];
   $("#endpoints").innerHTML = eps.map((e, i) => `<div class="ep">
@@ -472,6 +524,8 @@ async function init() {
   renderChatHead(); renderStatus(); renderConvs(); renderMessages(); renderApi();
 }
 enhanceSelect($("#chatModel"), "Model");
+enhanceSelect($("#apiModel"), "Model");
+$("#apiModel").addEventListener("change", () => { store.set("apiModel", $("#apiModel").value); renderApi(); });
 showView(store.get("view", "chat"));
 init();
 setInterval(pollStatus, 2000);

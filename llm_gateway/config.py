@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -81,6 +83,7 @@ class AgentConfig:
     scratch_dir: Path | None = None        # fast temporary folder the tools may also use (pods: /tmp)
     default_mode: str = "default"
     max_steps: int = 40
+    max_running: int = 1                   # agent tasks running at once (agent/dispatch.py)
     shell: tuple[str, ...] = ()            # empty = detect (Git Bash on Windows, else PowerShell)
     hooks: dict = field(default_factory=dict)
     mcp_servers: dict = field(default_factory=dict)
@@ -140,10 +143,48 @@ def _profile(raw: dict, index: int) -> Profile:
     )
 
 
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """A minimal .env reader: KEY=value lines, # comments, optional quotes around the value."""
+    values = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def expand_vars(value, env: dict[str, str]):
+    """Replace ${VAR} and ${VAR:-default} in every string of the config. Machine-specific values
+    (model folders, binaries, project folders, the API key) live in .env, not in config.json."""
+    if isinstance(value, dict):
+        return {k: expand_vars(v, env) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_vars(v, env) for v in value]
+    if not isinstance(value, str):
+        return value
+
+    def sub(m: re.Match) -> str:
+        name, default = m.group(1), m.group(2)
+        if name in env:
+            return env[name]
+        if default is not None:
+            return default
+        raise ConfigError(f"${{{name}}} is used in the config but not set (add it to .env; see .env.example)")
+    return _VAR.sub(sub, value)
+
+
 def load_config(path: Path) -> Config:
     if not path.exists():
         raise ConfigError(f"{path} not found — copy config.example.json to config.json and edit it")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    # .env next to the config file; real environment variables win over it
+    env = {**read_env_file(path.parent / ".env"), **os.environ}
+    raw = expand_vars(json.loads(path.read_text(encoding="utf-8")), env)
     server = raw.get("server", {})
     ollama = raw.get("ollama", {})
     llamacpp = raw.get("llamacpp", {})
@@ -208,6 +249,7 @@ def _agent(raw: dict, base: Path) -> AgentConfig:
         k8s=K8sConfig(**{**k8s, "agents_dir": absolute(k8s.get("agents_dir", "data/agents"))}),
         default_mode=mode,
         max_steps=int(raw.get("max_steps", 40)),
+        max_running=int(raw.get("max_running", 1)),
         shell=tuple(raw.get("shell", [])),
         hooks=raw.get("hooks", {}),
         mcp_servers=raw.get("mcp_servers", {}),

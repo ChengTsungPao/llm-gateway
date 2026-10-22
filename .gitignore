@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/
+# machine-specific values and secrets — copy .env.example
+.env

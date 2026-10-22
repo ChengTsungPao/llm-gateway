@@ -84,6 +84,8 @@ Control changes hands at exactly two points: the model hands control over by emi
 | **Retry with exponential backoff + jitter** | `errors.py` `retry_transient` | Only for errors marked `retryable`, never for ones with side effects ([AWS write-up](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)) |
 | **Checkpoint / memento** | `session.py` | The whole state is plain data, written atomically after every step, so any session can be resumed |
 | **Progressive disclosure** | `skills.py` | Only skill names and descriptions sit in the prompt; the full text loads on demand |
+| **Priority queue + leases** | `manager.py` | One GPU, many callers: chat first on the same model; an agent task reserves its model between steps (section 9) |
+| **Bulkhead (bounded concurrency)** | `agent/dispatch.py` | At most `max_running` agent tasks at once, so they cannot starve chat |
 | **Human-in-the-loop** | permission modes | Risky actions wait for a person ([Anthropic: Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)) |
 
 ## 4. Failure handling: classify first, then route
@@ -284,7 +286,77 @@ Tested on the RTX 3060 (see README):
 | Gemma 4 26B | Works |
 | gpt-oss through llama.cpp | Did not produce parseable tool calls, so it has no agent profile |
 
-## 9. Tests
+## 9. Scheduling (two layers)
+
+One GPU serves one model, and it generates for one request at a time. Chat, agents, Claude Code,
+Codex and other API clients all want it.
+
+```mermaid
+flowchart LR
+    C[chat] --> Q
+    A1[agent task A] --> D
+    A2[agent task B] --> D
+    X[API · Claude Code · Codex] --> Q
+    D[layer 2: dispatcher<br/>agent/dispatch.py<br/>max_running tasks] -- model calls --> Q
+    Q[layer 1: model scheduler<br/>manager.py<br/>queue · leases · priority] --> G[(GPU)]
+```
+
+### Layer 1: model scheduler (`manager.py`)
+
+Every model call takes a ticket: `async with manager.use(profile, source=..., lease=...)`. When the
+GPU is free, the scheduler picks the next ticket:
+
+| Rule | Why |
+|---|---|
+| **Compatible profiles share the load.** Same weights, and loaded context ≥ needed context (`weights()`, `_compatible()`) | An 8K chat profile and a 32K agent profile of one model never reload |
+| **Same model: chat first.** Priority chat < agent < api < admin, then first come first served (`_order()`) | You are waiting for the chat; the agent is not |
+| **Different model: wait for the agent task.** A task holds a **lease** on its model from its first call until the turn ends (`DELETE /v1/leases/{id}`, sent in `Agent.run`'s `finally`) | Between calls the agent runs tools and the GPU looks idle. Without the lease, a chat would switch the model away and the agent would have to reload it for its next step |
+| **Safety valves.** A lease expires after 10 min without a call (`lease_idle_s`); a ticket gives up after 30 min (`max_wait_s`) | An agent waiting for a permission nobody answers must not block the GPU forever |
+| **A cancelled ticket leaves the queue** (`finally` in `use()`) | A closed browser tab does not hold a place |
+
+Callers tell the scheduler who they are with headers:
+
+- `X-LLM-Gateway-Source: chat | agent`. Anything else counts as `api`.
+- `X-LLM-Gateway-Lease`: set by agents.
+- `X-LLM-Gateway-Request-Id`: optional.
+
+While a streamed request waits, the gateway sends SSE comment lines (`: llm-gateway-queue {...}`).
+Clients ignore them, but they keep the connection alive.
+
+**Patterns:** a priority queue with a single worker (the GPU), plus leases (time-limited
+reservations) to keep a multi-step job's resource between its steps.
+
+### Layer 2: task dispatcher (`agent/dispatch.py`)
+
+At most `agent.max_running` agent turns run at once (default 1). Five agents in parallel are not
+faster on one GPU: each crawls, five pods take memory, and chat waits longer.
+
+- A turn sent while another runs waits in the dispatcher's list.
+- Its pod is not woken until the turn starts.
+- `GET .../sessions/{id}` reports `queued: <position>`.
+- When a turn ends, the dispatcher starts the next one.
+
+The dispatcher watches the host's `running` flag, so it works the same for local and pod agents.
+
+**Pattern:** bounded concurrency in front of a shared resource, a bulkhead.
+
+### Seen live (RTX 3060, two pod agents with `max_running: 1`)
+
+| Time | Event |
+|---|---|
+| 5 s | Task A starts; task B waits in the dispatcher |
+| 12 s | A chat on the same model family answers in 0.9 s while A works (shared weights, chat first) |
+| 14 s | A chat for another model (llama3.1) waits in the GPU queue: A holds the lease |
+| 16 s | A finishes; the chat gets the GPU and the model switches |
+| 18 s | B starts; its first call waits behind the chat, then switches back |
+| 28 s | Both tasks and both chats are done; nothing failed |
+
+## 10. Configuration values on this machine
+
+Paths, binaries and keys go in `.env` (see `.env.example`). `config.json` refers to them as
+`${NAME}` (`config.py` `expand_vars`), so the committed examples contain no machine paths.
+
+## 11. Tests
 
 `tests/test_agent.py` drives the loop with `FakeLLM`, a scripted model. Every branch above has a
 test, with no GPU needed:
@@ -303,6 +375,15 @@ test, with no GPU needed:
 - compaction
 - the web API's access rules
 
+Other test files:
+
+| File | What it covers |
+|---|---|
+| `test_scheduler.py` | Layer 1: queueing, chat first, leases, shared weights, timeouts |
+| `test_dispatch.py` | Layer 2, and `${VAR}` expansion from `.env` |
+| `test_protocols.py` | `/v1/messages` and `/v1/responses`, end to end with a scripted backend |
+| `test_k8s.py` | Pod manifests and the gateway → pod chain, without a cluster |
+
 ```bash
-uv run --group dev pytest tests/test_agent.py -v
+uv run --group dev pytest -v
 ```

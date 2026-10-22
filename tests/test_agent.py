@@ -39,6 +39,11 @@ class FakeLLM:
     def __init__(self, *script: Completion):
         self.script = list(script)
         self.seen: list[list[dict]] = []
+        self.lease = None
+        self.released: list[str] = []
+
+    async def release_lease(self):
+        self.released.append(self.lease)
 
     async def stream(self, messages, tools, **kw):
         self.seen.append(messages)
@@ -84,6 +89,7 @@ async def test_tool_call_then_answer(tmp_path):
     result = next(e for e in events if isinstance(e, ToolResult))
     assert result.ok and "1.2.3" in result.content
     assert isinstance(events[-1], TurnEnd) and events[-1].reason == "done" and events[-1].steps == 2
+    assert llm.released == [f"agent-{agent.session.id}"]      # the turn gave its model lease back
     roles = [m["role"] for m in agent.session.messages]
     assert roles == ["user", "assistant", "tool", "assistant"]
     # the second model call saw the tool result, paired with its call id

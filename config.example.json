@@ -1,30 +1,41 @@
 {
   "server": {
-    "host": "127.0.0.1",
+    "host": "${GATEWAY_HOST:-127.0.0.1}",
     "port": 8790,
-    "api_key": "",
+    "api_key": "${API_KEY:-}",
     "auto_compact": true
   },
   "ollama": {
     "url": "http://127.0.0.1:11434",
-    "pinned": ["bge-m3"]
+    "pinned": [
+      "bge-m3"
+    ]
   },
   "llamacpp": {
-    "server_binary": "/path/to/llama-server",
+    "server_binary": "${LLAMA_SERVER}",
     "port": 8791,
     "startup_timeout_s": 300,
     "log_dir": "logs"
   },
   "agent": {
-    "workspaces": ["/path/to/your/projects"],
+    "workspaces": [
+      "${PROJECTS_DIR}"
+    ],
     "data_dir": "data",
     "sandbox": "k8s",
-    "k8s": {"agents_dir": "data/agents", "namespace": "llm-agents", "image": "llm-gateway-agent:latest",
-            "kube_context": "docker-desktop", "cpu": "2", "memory": "2Gi"},
+    "k8s": {
+      "agents_dir": "data/agents",
+      "namespace": "llm-agents",
+      "image": "llm-gateway-agent:latest",
+      "kube_context": "${KUBE_CONTEXT:-docker-desktop}",
+      "cpu": "2",
+      "memory": "2Gi"
+    },
     "default_mode": "default",
     "max_steps": 40,
     "hooks": {},
-    "mcp_servers": {}
+    "mcp_servers": {},
+    "max_running": 1
   },
   "profiles": [
     {
@@ -57,7 +68,7 @@
       "id": "gemma4-26b-qat-moe",
       "name": "Gemma 4 26B-A4B QAT (MoE offload)",
       "backend": "llamacpp",
-      "model_path": "/path/to/gemma4-26b-a4b-it-qat.gguf",
+      "model_path": "${GGUF_DIR}/gemma4-26b-a4b-it-qat.gguf",
       "context": 8192,
       "max_context": 262144,
       "type": "moe",
@@ -68,7 +79,12 @@
       "bits": 4.58,
       "params_b": 25.23,
       "placement": "gpu+cpu",
-      "args": ["-ngl", "99", "-ncmoe", "11"],
+      "args": [
+        "-ngl",
+        "99",
+        "-ncmoe",
+        "11"
+      ],
       "notes": "11 layers of experts on CPU, the rest on the GPU."
     }
   ]

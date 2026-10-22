@@ -9,6 +9,7 @@ import logging
 import shutil
 import subprocess
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .agent.dispatch import Dispatcher
 from .agent.hosting import AgentHost, HostError, LocalHost
 from .agent.k8s import PodHost
 from .agent.permissions import MODES, Answer
@@ -79,6 +81,7 @@ def create_app(cfg: Config) -> FastAPI:
         }, cfg.agent.default_mode)
     else:
         host = LocalHost(runtime, AgentService(runtime, lambda model: context_of.get(model, 8192)))
+    dispatcher = Dispatcher(host, cfg.agent.max_running)    # layer 2: how many agent tasks run at once
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -89,7 +92,9 @@ def create_app(cfg: Config) -> FastAPI:
         # Models left in Ollama by an earlier run hold GPU memory while the gateway shows
         # "No model loaded"; start from a clean GPU (pinned models stay).
         await evict_ollama(client, cfg, keep=None, required=False)
+        dispatcher.start()
         yield
+        await dispatcher.close()
         await host.close()
         await runtime.close()
         await manager.unload(force=True)  # never leave a llama-server process behind
@@ -104,6 +109,23 @@ def create_app(cfg: Config) -> FastAPI:
         # Claude Code sends the key as x-api-key when ANTHROPIC_API_KEY is used
         if auth != f"Bearer {cfg.api_key}" and request.headers.get("x-api-key") != cfg.api_key:
             raise HTTPException(401, "missing or wrong API key (Authorization: Bearer <key>)")
+
+    def caller(request: Request) -> dict:
+        """Who is asking, for the scheduler (manager.py): the source (chat | agent | api), an agent
+        task's lease, and a request id the UI uses to find its own place in the queue."""
+        h = request.headers
+        source = h.get("x-llm-gateway-source", "api")
+        source = source if source in ("chat", "agent") else "api"
+        return {"source": source, "lease": (h.get("x-llm-gateway-lease") or None) if source == "agent" else None,
+                "request_id": h.get("x-llm-gateway-request-id") or uuid.uuid4().hex}
+
+    def queue_beat(request_id: str):
+        """Heartbeat for streams: while the request waits, say where it stands (an SSE comment
+        that OpenAI clients ignore and the UI and agent read); afterwards just keep-alive."""
+        def beat() -> bytes:
+            status = manager.queue_status(request_id)
+            return (f": llm-gateway-queue {json.dumps(status)}\n\n".encode() if status else b": keep-alive\n\n")
+        return beat
 
     def profile_or_404(profile_id: str):
         p = cfg.profile(profile_id)
@@ -122,7 +144,15 @@ def create_app(cfg: Config) -> FastAPI:
         if time.time() - gpu_cache["t"] > 3:
             gpu_cache["v"], gpu_cache["sys"], gpu_cache["t"] = (await asyncio.to_thread(_gpu_info), _system_info(),
                                                                 time.time())
-        return {**manager.snapshot(), "gpu": gpu_cache["v"], "system": gpu_cache["sys"],
+        snap = manager.snapshot()
+        # name agent tasks in the GPU queue by their title (leases are "agent-<task id>")
+        titles = {f"agent-{a}": t for a, t in dispatcher.titles.items()}
+        for item in [snap["running"], *snap["queue"], *snap["leases"]]:
+            if item:
+                key = item.get("lease") or item.get("id")
+                if key in titles:
+                    item["title"] = titles[key]
+        return {**snap, "tasks": dispatcher.snapshot(), "gpu": gpu_cache["v"], "system": gpu_cache["sys"],
                 "auth_required": bool(cfg.api_key)}
 
     @app.get("/api/profiles", dependencies=[Depends(require_key)])
@@ -143,10 +173,16 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/unload", dependencies=[Depends(require_key)])
     async def unload():
         try:
-            await manager.unload()
+            await manager.unload()        # waits for running requests and agent tasks
         except ModelBusy as e:
             raise HTTPException(409, str(e)) from e
         return manager.snapshot()
+
+    @app.delete("/v1/leases/{lease_id}", dependencies=[Depends(require_key)])
+    async def release_lease(lease_id: str):
+        """An agent task ended: its model no longer has to stay loaded for it."""
+        manager.release_lease(lease_id)
+        return {"ok": True}
 
     # ── OpenAI-compatible ─────────────────────────────────────────────────
 
@@ -171,19 +207,16 @@ def create_app(cfg: Config) -> FastAPI:
         return await compactor.compact(body, profile.context, summarize)
 
     @app.post("/v1/chat/completions", dependencies=[Depends(require_key)])
-    async def chat_completions(body: dict):
+    async def chat_completions(body: dict, request: Request):
         model_id = body.get("model") or manager.active_id
         if not model_id:
             raise HTTPException(400, "no 'model' given and no model is active")
         profile = profile_or_404(model_id)
-        try:
-            manager.check_can_use(profile.id)
-        except ModelBusy as e:
-            raise HTTPException(409, str(e)) from e
+        who = caller(request)
 
         if not body.get("stream"):
             try:
-                async with manager.use(profile.id) as backend:
+                async with manager.use(profile.id, **who) as backend:
                     body, info = await fit_context(backend, profile, body)
                     d = await backend.chat(body)
             except ModelBusy as e:
@@ -196,15 +229,19 @@ def create_app(cfg: Config) -> FastAPI:
 
         # Streaming: hold the model for the whole stream. Load errors become an SSE error event.
         # A compaction notice is sent first as an SSE comment line, which OpenAI clients ignore.
-        async def gen():
+        async def answer():
             nonlocal body
+            async with manager.use(profile.id, **who) as backend:
+                body, info = await fit_context(backend, profile, body)
+                if info:
+                    yield f": llm-gateway {json.dumps(info)}\n\n".encode()
+                async for piece in backend.chat_stream(body):
+                    yield piece
+
+        async def gen():
             try:
-                async with manager.use(profile.id) as backend:
-                    body, info = await fit_context(backend, profile, body)
-                    if info:
-                        yield f": llm-gateway {json.dumps(info)}\n\n".encode()
-                    async for piece in backend.chat_stream(body):
-                        yield piece
+                async for piece in with_heartbeat(answer(), queue_beat(who["request_id"]), every_s=2):
+                    yield piece
             except (BackendError, ModelBusy) as e:
                 err = {"message": str(e), "code": "model_busy" if isinstance(e, ModelBusy) else "backend_error"}
                 yield f"data: {json.dumps({'error': err}, ensure_ascii=False)}\n\n".encode()
@@ -222,13 +259,13 @@ def create_app(cfg: Config) -> FastAPI:
         summaries) for its own model names; those should not force a model switch."""
         return cfg.profile(model or "") or (cfg.profile(manager.active_id) if manager.active_id else None)
 
-    async def run_chat(profile, chat: dict) -> dict:
-        async with manager.use(profile.id) as backend:
+    async def run_chat(profile, chat: dict, who: dict) -> dict:
+        async with manager.use(profile.id, **who) as backend:
             chat, _ = await fit_context(backend, profile, chat)
             return await backend.chat(chat)
 
-    async def stream_chat(profile, chat: dict) -> AsyncIterator[bytes]:
-        async with manager.use(profile.id) as backend:
+    async def stream_chat(profile, chat: dict, who: dict) -> AsyncIterator[bytes]:
+        async with manager.use(profile.id, **who) as backend:
             chat, _ = await fit_context(backend, profile, dict(chat, stream=True))
             async for piece in backend.chat_stream(chat):
                 yield piece
@@ -240,7 +277,7 @@ def create_app(cfg: Config) -> FastAPI:
         return JSONResponse(anthropic.error_body(kind, message), status_code=status)
 
     @app.post("/v1/messages", dependencies=[Depends(require_key)])
-    async def messages(body: dict):
+    async def messages(body: dict, request: Request):
         profile = protocol_profile(body.get("model"))
         if profile is None:
             return anthropic_error(404, "not_found_error", f"unknown model '{body.get('model')}'. "
@@ -249,14 +286,11 @@ def create_app(cfg: Config) -> FastAPI:
         size = prompt_size(chat)
         log.info("anthropic /v1/messages model=%s ~%d prompt tokens, %d messages, %d tools, stream=%s",
                  profile.id, size, len(chat["messages"]), len(chat.get("tools", [])), bool(body.get("stream")))
-        try:
-            manager.check_can_use(profile.id)
-        except ModelBusy as e:
-            return anthropic_error(529, "overloaded_error", str(e))    # Claude Code retries 529
+        who = caller(request)
         if not body.get("stream"):
             try:
-                return anthropic.from_chat(await run_chat(profile, chat), profile.id, size)
-            except ModelBusy as e:
+                return anthropic.from_chat(await run_chat(profile, chat, who), profile.id, size)
+            except ModelBusy as e:      # waited too long in the queue; Claude Code retries 529
                 return anthropic_error(529, "overloaded_error", str(e))
             except BackendError as e:
                 return anthropic_error(500, "api_error", str(e))
@@ -264,7 +298,7 @@ def create_app(cfg: Config) -> FastAPI:
         async def gen():
             yield anthropic.message_start(profile.id, size)       # at once, even while the model loads
             try:
-                frames = anthropic.stream(stream_events(stream_chat(profile, chat)), size)
+                frames = anthropic.stream(stream_events(stream_chat(profile, chat, who)), size)
                 async for frame in with_heartbeat(frames, anthropic.PING):
                     yield frame
             except (BackendError, ModelBusy) as e:
@@ -278,7 +312,7 @@ def create_app(cfg: Config) -> FastAPI:
         return {"input_tokens": prompt_size(anthropic.to_chat(body, ""))}
 
     @app.post("/v1/responses", dependencies=[Depends(require_key)])
-    async def responses_api(body: dict):
+    async def responses_api(body: dict, request: Request):
         if body.get("previous_response_id"):
             raise HTTPException(400, "previous_response_id is not supported: send the full input (store=false)")
         profile = protocol_profile(body.get("model"))
@@ -289,13 +323,10 @@ def create_app(cfg: Config) -> FastAPI:
         size = prompt_size(chat)
         log.info("responses /v1/responses model=%s ~%d prompt tokens, %d items, %d tools, stream=%s",
                  profile.id, size, len(body.get("input") or []), len(chat.get("tools", [])), bool(body.get("stream")))
-        try:
-            manager.check_can_use(profile.id)
-        except ModelBusy as e:
-            raise HTTPException(409, str(e)) from e
+        who = caller(request)
         if not body.get("stream"):
             try:
-                return responses.from_chat(await run_chat(profile, chat), profile.id, kinds, size)
+                return responses.from_chat(await run_chat(profile, chat, who), profile.id, kinds, size)
             except ModelBusy as e:
                 raise HTTPException(409, str(e)) from e
             except BackendError as e:
@@ -307,8 +338,8 @@ def create_app(cfg: Config) -> FastAPI:
             for frame in writer.start():
                 yield frame
             try:
-                frames = writer.stream(stream_events(stream_chat(profile, chat)))
-                async for frame in with_heartbeat(frames, responses.HEARTBEAT):
+                frames = writer.stream(stream_events(stream_chat(profile, chat, who)))
+                async for frame in with_heartbeat(frames, queue_beat(who["request_id"])):
                     yield frame
             except (BackendError, ModelBusy) as e:
                 yield writer.failed(str(e), "model_busy" if isinstance(e, ModelBusy) else "server_error")
@@ -367,7 +398,8 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/agent/sessions/{session_id}", dependencies=agent_deps)
     async def agent_get(session_id: str):
-        return await host.get(session_id)
+        view = await host.get(session_id)
+        return {**view, "queued": dispatcher.position(session_id), "start_error": dispatcher.errors.get(session_id)}
 
     @app.delete("/api/agent/sessions/{session_id}", dependencies=agent_deps)
     async def agent_delete(session_id: str):
@@ -383,8 +415,8 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/agent/sessions/{session_id}/turn", dependencies=agent_deps)
     async def agent_turn(session_id: str, payload: dict):
-        await host.start_turn(session_id, str(payload.get("prompt", "")))
-        return {"ok": True}
+        position = await dispatcher.submit(session_id, str(payload.get("prompt", "")))
+        return {"ok": True, "position": position}       # 0: starting now; n: n-th in line
 
     @app.get("/api/agent/sessions/{session_id}/events", dependencies=agent_deps)
     async def agent_events(session_id: str, start: int = 0):
@@ -400,7 +432,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/agent/sessions/{session_id}/cancel", dependencies=agent_deps)
     async def agent_cancel(session_id: str):
-        return {"cancelled": await host.cancel(session_id)}
+        return {"cancelled": await dispatcher.cancel(session_id)}
 
     @app.exception_handler(HTTPException)
     async def http_error(_req: Request, exc: HTTPException):

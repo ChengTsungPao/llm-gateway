@@ -23,6 +23,12 @@ import httpx
 from .events import ReasoningDelta, TextDelta
 
 
+@dataclass
+class QueueWait:
+    """The gateway's scheduler is holding this call in its queue (see manager.py)."""
+    status: dict
+
+
 class LLMError(Exception):
     def __init__(self, message: str, retryable: bool = False):
         super().__init__(message)
@@ -54,11 +60,32 @@ class LLMClient:
         self.api_key = api_key
         self.timeout_s = timeout_s
         self.transport = transport      # tests pass a mock transport
+        # An agent task holds a lease on its model from its first call until release_lease(), so
+        # the gateway does not switch the model while the agent runs tools between calls.
+        self.lease: str | None = None
+
+    def _headers(self) -> dict:
+        h = {"X-LLM-Gateway-Source": "agent"}
+        if self.lease:
+            h["X-LLM-Gateway-Lease"] = self.lease
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
+
+    async def release_lease(self) -> None:
+        if not self.lease:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10, transport=self.transport) as client:
+                await client.delete(f"{self.base_url}/leases/{self.lease}", headers=self._headers())
+        except httpx.HTTPError:
+            pass        # the gateway also drops idle leases on its own
 
     async def stream(self, messages: list[dict], tools: list[dict], *, think: bool = False,
                      max_tokens: int | None = None, temperature: float | None = None,
-                     ) -> AsyncIterator[TextDelta | ReasoningDelta | Completion]:
+                     ) -> AsyncIterator[TextDelta | ReasoningDelta | QueueWait | Completion]:
         """Yield text/reasoning deltas as they arrive, then one final Completion.
+        While the call waits in the gateway's queue, QueueWait items report where it stands.
         Retries (with backoff) only when nothing has been streamed yet and the error is transient."""
         body = {"model": self.model, "messages": messages, "stream": True, "think": think,
                 "auto_compact": False}
@@ -80,8 +107,8 @@ class LLMClient:
                     raise
                 await asyncio.sleep(1.5 * 2 ** attempt + random.uniform(0, 1))
 
-    async def _stream_once(self, body: dict) -> AsyncIterator[TextDelta | ReasoningDelta | Completion]:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+    async def _stream_once(self, body: dict) -> AsyncIterator[TextDelta | ReasoningDelta | QueueWait | Completion]:
+        headers = self._headers()
         done = Completion()
         calls: dict[int, dict] = {}
         try:
@@ -95,6 +122,9 @@ class LLMClient:
                         raise LLMError(f"model server answered {r.status_code}: {text}",
                                        retryable=r.status_code in (409, 429, 502, 503))
                     async for line in r.aiter_lines():
+                        if line.startswith(": llm-gateway-queue "):
+                            yield QueueWait(json.loads(line[20:]))
+                            continue
                         if line.startswith(": llm-gateway "):
                             done.compacted = json.loads(line[14:]).get("compacted_messages", 0)
                             continue

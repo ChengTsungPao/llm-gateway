@@ -21,7 +21,7 @@ flowchart LR
         V1["/v1 OpenAI API<br/>+ auto-compaction"]
         MGMT["/api status · models<br/>CPU · RAM · GPU · VRAM"]
         AG["/api/agent<br/>PodHost"]
-        MM["ModelManager<br/>one model at a time · 409 while busy"]
+        MM["Scheduler (ModelManager)<br/>one model · queue · chat first · agent leases"]
     end
 
     subgraph gpu ["RTX 3060 12 GB"]
@@ -60,7 +60,7 @@ flowchart LR
 - **Model serving.**
   - Every client speaks the OpenAI API to `/v1`.
   - The ModelManager keeps exactly one model on the GPU, served by either Ollama or a tuned `llama-server`.
-  - Switching is refused (HTTP 409) while the current model is in use.
+  - Requests that need the GPU wait in a queue (rules below), and agent tasks start one at a time.
 - **Agents.**
   - Every web agent runs in its own Kubernetes pod.
   - The pod sees only its own host folder (`data/agents/<id>/`, mounted at `/agent`).
@@ -74,8 +74,8 @@ flowchart LR
 |---|---|
 | **OpenAI-compatible API** | `/v1/models` and `/v1/chat/completions`, streaming included. Any OpenAI SDK or tool works. Set the base URL to the gateway and use a profile id as `model`. |
 | **Claude Code and Codex** | Two more API formats, translated to the same models: the Anthropic Messages API (`/v1/messages`) for Claude Code, and the OpenAI Responses API (`/v1/responses`) for Codex. Both stream, including tool calls. See [Use with coding tools](#use-with-claude-code-codex-and-oh-my-pi). |
-| **One model at a time** | A 12 GB card holds one model. Asking for a different model unloads the current one first, then loads the new one. |
-| **No switching while busy** | While a request is running, switching and unloading are refused with HTTP 409 instead of queueing. The same applies while a model is loading. Requests for the model that is already loaded run concurrently. |
+| **One model at a time** | A 12 GB card holds one model. Asking for a different model unloads the current one first, then loads the new one. Profiles with the same weights share one load: an 8K chat profile runs on the 32K agent profile of the same model without reloading. |
+| **Scheduling** | Every model call (chat, agent, API, Claude Code, Codex) waits in one queue instead of failing:<br>1. **Same model:** shared, and chat goes before the agent's next call.<br>2. **Different model:** waits until the running agent task has finished. The task holds a lease on its model, so tool runs between its calls don't let anything switch the model.<br>3. **Agent tasks** start one at a time (`agent.max_running`). The others wait in line.<br><br>A lease is dropped after 10 minutes without a model call, and a request gives up after 30 minutes. The **Resources** panel shows what is running, what is reserved, and both queues in order. Details: [docs/agent.md](docs/agent.md#9-scheduling-two-layers). |
 | **Auto-compaction** | When a conversation outgrows the model's context, the loaded model summarizes older messages (in the conversation's own language), and the summary is placed in the system prompt. The newest messages stay verbatim. Ollama would otherwise drop old messages silently, and llama.cpp would reject the request. |
 | **Two backends** | **Ollama** for plain models. Requests go through its native `/api/chat` so each profile's context size applies. **llama.cpp** (`llama-server`) for tuned setups such as MoE expert offload (`-ncmoe`) or a draft model for speculative decoding. These setups make 20–35B models usable on 12 GB. |
 | **Thinking switch** | `"think": false` turns reasoning off, or down to the lowest level for models that can't turn it off (gpt-oss, Muse). `true` turns it on. Answers can arrive much sooner with it off. |
@@ -150,7 +150,8 @@ The two MoE agent profiles were measured with only ~1 GB of system RAM free; the
 Requires [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) for Ollama profiles, and a CUDA build of [llama.cpp](https://github.com/ggml-org/llama.cpp/releases) `llama-server` for llama.cpp profiles.
 
 ```bash
-cp config.example.json config.json   # then edit paths and profiles
+cp .env.example .env                 # machine-specific values: model folders, binaries, API key
+cp config.example.json config.json   # profiles; refers to .env values as ${NAME}
 uv run llm-gateway                   # or: uv run llm-gateway --config path/to/config.json
 ```
 
@@ -167,8 +168,9 @@ Open `http://127.0.0.1:8790`. To use it from a phone, set `server.host` to `0.0.
 | POST | `/v1/responses` | OpenAI Responses API (Codex). Stateless: send the full input (`previous_response_id` is not supported). |
 | GET | `/api/status` | Active model, state (`idle` / `loading` / `ready` / `error`), whether it is busy, and resources: CPU %, RAM, GPU load and VRAM. |
 | GET | `/api/profiles` | Full profile list for the UI. |
-| POST | `/api/activate` | `{"id": "..."}`: load a model ahead of time. 409 while another model is in use. |
-| POST | `/api/unload` | Unload the current model. 409 while it is in use. |
+| POST | `/api/activate` | `{"id": "..."}`: load a model ahead of time. Waits its turn in the queue. |
+| POST | `/api/unload` | Release the GPU. Waits for running requests and agent tasks. |
+| DELETE | `/v1/leases/{id}` | An agent task ended; its model may be switched again. Sent by the agent harness. |
 | GET | `/api/health` | Liveness, no auth. |
 
 ```python
@@ -251,7 +253,13 @@ providers:
       - {id: qwen3.5-9b-code, contextWindow: 65536}
 ```
 
-## Configuration (`config.json`)
+## Configuration (`.env` and `config.json`)
+
+Values that belong to this machine live in **`.env`**: model folders, binaries, the project folder, the Kubernetes context, and the API key. `.env` is not committed; **`.env.example`** lists every variable.
+
+`config.json` refers to them as `${NAME}` or `${NAME:-default}`, for example `"server_binary": "${LLAMA_SERVER}"`. Real environment variables win over `.env`. A missing variable without a default stops the gateway with a message naming it.
+
+### `config.json`
 
 `config.json` is machine-specific (model paths) and git-ignored; `config.example.json` is the template.
 
@@ -275,6 +283,7 @@ providers:
 | `agent.data_dir` | Saved agent sessions, plus user-wide `AGENTS.md` and `skills/` (default `data`). |
 | `agent.default_mode` | `plan`, `default`, `accept_edits` or `bypass` (see [docs/agent.md](docs/agent.md#6-safety-model)). |
 | `agent.max_steps` | Model calls per agent turn before it stops and asks you to continue. |
+| `agent.max_running` | Agent tasks running at the same time (default 1). The GPU generates for one request at a time, so more is rarely faster. |
 | `agent.hooks`, `agent.mcp_servers` | Shell hooks and MCP servers for the agent ([examples](docs/agent.md#7-extending-it)). |
 
 Each entry in `profiles`:
