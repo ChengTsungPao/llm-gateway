@@ -67,10 +67,10 @@ def _git_branch(workspace: Path) -> str | None:
         return None
 
 
-def read_memory(workspace: Path, user_dir: Path | None) -> list[tuple[str, str]]:
+def read_memory(workspace: Path, user_dir: Path | None, shared_dir: Path | None = None) -> list[tuple[str, str]]:
     """Long-term memory: instruction files the user wrote for agents, user-wide first."""
     found = []
-    for base, label in ((user_dir, "user"), (workspace, "project")):
+    for base, label in ((shared_dir, "shared"), (user_dir, "user"), (workspace, "project")):
         if base is None:
             continue
         for name in MEMORY_FILES:

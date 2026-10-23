@@ -28,13 +28,14 @@ from .runtime import AgentRuntime
 from .service import AgentService
 
 ROOT = Path(os.environ.get("AGENT_ROOT", "/agent"))
+SHARED = Path(os.environ.get("AGENT_SHARED", "/shared"))   # data/shared of the host, read-only: skills/ and AGENTS.md
 
 
 def create_pod_app(env: dict[str, str] | None = None) -> FastAPI:
     env = dict(os.environ if env is None else env)
     agent_id = env["AGENT_ID"]
     extra = json.loads(env.get("AGENT_CONFIG", "{}"))
-    cfg = AgentConfig(data_dir=ROOT / "state", default_workspace=ROOT / "workspace", scratch_dir=Path("/tmp"),
+    cfg = AgentConfig(data_dir=ROOT / "state", default_workspace=ROOT / "workspace", scratch_dir=Path("/tmp"), shared_dir=SHARED,
                       default_mode=extra.get("default_mode", "default"), max_steps=int(extra.get("max_steps", 40)),
                       hooks=extra.get("hooks", {}), mcp_servers=extra.get("mcp_servers", {}))
     contexts = json.loads(env.get("MODEL_CONTEXTS", "{}"))

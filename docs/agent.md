@@ -251,6 +251,13 @@ it is done, and send it back to work if they fail (exit 2):
 **A memory file.** Put `AGENTS.md` in the workspace for project rules, or in `data/` for rules
 that apply everywhere.
 
+**Skills and rules for every agent in pods.** A pod sees only its own folder, so `data/` is not
+visible to it. Put what all agents should have in `data/shared/` (mounted read-only at `/shared`):
+`data/shared/skills/<name>/SKILL.md` and `data/shared/AGENTS.md`. Skills copied from Claude Code
+work as they are, but one that calls a program the pod image lacks (e.g. the `graphify` command)
+can only follow its instructions. Shell hooks and MCP servers in `config.json` also reach the pods,
+and they run inside the pod: a Windows program or a path on your computer does not exist there.
+
 ## 8. Differences from Claude Code
 
 **Same ideas:**

@@ -76,6 +76,7 @@ class PodManager:
 
     def manifest(self, agent_id: str) -> dict:
         folder = host_path(self.cfg.agents_dir / agent_id, self.cfg.host_mount_prefix)
+        shared = host_path(self.cfg.agents_dir.parent / "shared", self.cfg.host_mount_prefix)
         env = [{"name": k, "value": v} for k, v in {**self.env, "AGENT_ID": agent_id}.items()]
         return {
             "apiVersion": "v1", "kind": "Pod",
@@ -91,14 +92,17 @@ class PodManager:
                     "env": env,
                     "ports": [{"containerPort": POD_PORT}],
                     "workingDir": "/agent/workspace",
-                    "volumeMounts": [{"name": "home", "mountPath": "/agent"}],
+                    "volumeMounts": [{"name": "home", "mountPath": "/agent"},
+                                     {"name": "shared", "mountPath": "/shared", "readOnly": True}],
                     "resources": {"requests": {"cpu": "100m", "memory": "256Mi"},
                                   "limits": {"cpu": self.cfg.cpu, "memory": self.cfg.memory}},
                     "readinessProbe": {"httpGet": {"path": "/healthz", "port": POD_PORT},
                                        "periodSeconds": 2, "failureThreshold": 3},
                     "securityContext": {"allowPrivilegeEscalation": False},
                 }],
-                "volumes": [{"name": "home", "hostPath": {"path": folder, "type": "DirectoryOrCreate"}}],
+                "volumes": [{"name": "home", "hostPath": {"path": folder, "type": "DirectoryOrCreate"}},
+                            # skills and AGENTS.md every agent gets: data/shared next to the agents folder, read-only
+                            {"name": "shared", "hostPath": {"path": shared, "type": "DirectoryOrCreate"}}],
             },
         }
 

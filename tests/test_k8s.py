@@ -26,7 +26,8 @@ def test_pod_manifest_is_a_sandbox(tmp_path):
     spec = m["spec"]
     assert spec["automountServiceAccountToken"] is False          # no K8s credentials in the pod
     c = spec["containers"][0]
-    assert c["volumeMounts"] == [{"name": "home", "mountPath": "/agent"}]
+    assert c["volumeMounts"] == [{"name": "home", "mountPath": "/agent"},
+                                 {"name": "shared", "mountPath": "/shared", "readOnly": True}]   # skills + AGENTS.md
     assert spec["volumes"][0]["hostPath"]["path"].endswith("20261022-ABC_1")   # only its own folder
     assert c["resources"]["limits"] == {"cpu": "2", "memory": "2Gi"}
     assert {"name": "AGENT_ID", "value": "20261022-ABC_1"} in c["env"]
@@ -99,3 +100,18 @@ async def _ready():
 
 async def _stopped():
     return "none"
+
+
+def test_pod_shares_skills_and_agents_md_read_only(tmp_path):
+    from llm_gateway.agent.context import read_memory
+    from llm_gateway.agent.skills import discover_skills
+    shared = tmp_path / "shared"
+    (shared / "skills" / "demo").mkdir(parents=True)
+    (shared / "skills" / "demo" / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\nbody")
+    (shared / "AGENTS.md").write_text("be careful")
+    ws = tmp_path / "ws"; ws.mkdir()
+    assert "demo" in discover_skills(ws, [shared / "skills"])
+    assert read_memory(ws, None, shared) == [("shared AGENTS.md", "be careful")]
+    m = PodManager(K8sConfig(agents_dir=tmp_path / "agents"), {}).manifest("a1")["spec"]
+    shared_mount = [v for v in m["volumes"] if v["name"] == "shared"][0]
+    assert shared_mount["hostPath"]["path"].endswith("shared")

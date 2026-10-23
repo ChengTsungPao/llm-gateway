@@ -83,6 +83,7 @@ class AgentConfig:
     scratch_dir: Path | None = None        # fast temporary folder the tools may also use (pods: /tmp)
     default_mode: str = "default"
     max_steps: int = 40
+    shared_dir: Path | None = None         # read-only folder with skills/ and AGENTS.md for every agent (pods: /shared)
     max_running: int = 1                   # agent tasks running at once (agent/dispatch.py)
     shell: tuple[str, ...] = ()            # empty = detect (Git Bash on Windows, else PowerShell)
     hooks: dict = field(default_factory=dict)
