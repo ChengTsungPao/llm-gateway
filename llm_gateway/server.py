@@ -26,7 +26,7 @@ from .agent.k8s import PodHost
 from .agent.permissions import MODES, Answer
 from .agent.runtime import AgentRuntime
 from .agent.service import AgentService
-from .backends import BackendError, evict_ollama, make_backend
+from .backends import BackendError, evict_ollama, free_gpu, make_backend
 from .compaction import Compactor
 from .config import Config
 from .manager import ModelBusy, ModelManager
@@ -171,7 +171,11 @@ def create_app(cfg: Config) -> FastAPI:
         return manager.snapshot()
 
     @app.post("/api/unload", dependencies=[Depends(require_key)])
-    async def unload():
+    async def unload(force: bool = False):
+        if force:                         # the UI's Release when busy or stuck: now, plus leftovers
+            await manager.release_now()
+            await free_gpu(client, cfg)
+            return manager.snapshot()
         try:
             await manager.unload()        # waits for running requests and agent tasks
         except ModelBusy as e:

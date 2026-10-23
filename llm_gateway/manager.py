@@ -154,16 +154,21 @@ class ModelManager:
         if self._compatible(profile):
             return self.backend
         self.status, self.loading_id, self.error, self.since = "loading", profile.id, None, time.time()
-        if self.backend:
-            await self.backend.unload()
-        self.backend, self.active_id = None, None
         backend = self._factory(profile)
         try:
+            if self.backend:
+                await self.backend.unload()
+            self.backend, self.active_id = None, None
             await backend.load()
-        except Exception as e:  # surface any load failure in the UI instead of crashing the server
-            await backend.unload()
-            self.status, self.loading_id, self.error, self.since = "error", None, str(e), time.time()
-            raise BackendError(str(e)) from e
+        except BaseException as e:
+            # Also on cancellation (the caller disconnected mid-load): a half-started server must not
+            # be left running unseen, and "loading" must not stick (it blocks the queue and Release).
+            await asyncio.shield(backend.unload())
+            if isinstance(e, Exception):   # surface the failure in the UI instead of crashing the server
+                self.status, self.loading_id, self.error, self.since = "error", None, str(e), time.time()
+                raise BackendError(str(e)) from e
+            self.status, self.loading_id, self.since = "idle", None, time.time()
+            raise
         self.backend, self.active_id = backend, profile.id
         self.status, self.loading_id, self.since = "ready", None, time.time()
         return backend
@@ -254,3 +259,14 @@ class ModelManager:
             async with self._cond:
                 self._running = None
                 self._cond.notify_all()
+
+    async def release_now(self) -> None:
+        """The Release button while the GPU is busy or stuck: free it now, without waiting.
+        Drops agent leases and stops the model even mid-request (that request fails); waiting
+        requests stay queued and load their model when their turn comes."""
+        self._leases.clear()
+        backend, self.backend, self.active_id = self.backend, None, None
+        if backend:
+            await backend.unload()
+        self.status, self.loading_id, self.error, self.since = "idle", None, None, time.time()
+        await self._notify()

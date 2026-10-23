@@ -121,9 +121,9 @@ function renderStatus() {
     $("#activeName").textContent = status.status === "error" ? "Load failed" : "No model loaded";
     $("#activeMeta").textContent = "";
   }
-  $("#unloadBtn").hidden = !status.active;
-  $("#unloadBtn").disabled = !!status.busy;
-  $("#unloadBtn").title = status.busy ? "The model is in use; it can be released when it finishes" : "Release the current model and free the GPU";
+  // Always there, so a stuck load or a forgotten agent can never lock the GPU.
+  $("#unloadBtn").title = status.busy ? "The model is in use: releasing stops what runs on it now (asks to confirm)"
+    : "Release the model and free the GPU";
   if (status.status === "error" && status.error) banner("Model failed to load: " + status.error);
   else if ($("#banner").textContent.startsWith("Model failed to load")) banner("");
   renderResources();
@@ -205,8 +205,19 @@ async function pollStatus() {
     if (e instanceof TypeError) { offline = true; banner("Cannot reach llm-gateway, retrying…", "info"); }
   }
 }
+// While the GPU is busy, the first click only arms the button; a second click within 4 s releases.
+let releaseArmed = null;
 $("#unloadBtn").addEventListener("click", async () => {
-  try { status = await api("/api/unload", { method: "POST" }); renderStatus(); } catch (e) { banner(e.message); }
+  const btn = $("#unloadBtn");
+  if (status.busy && !releaseArmed) {
+    btn.textContent = "Confirm?";
+    releaseArmed = setTimeout(() => { releaseArmed = null; btn.textContent = "Release"; }, 4000);
+    return;
+  }
+  clearTimeout(releaseArmed); releaseArmed = null;
+  btn.textContent = "Release"; btn.disabled = true;
+  try { status = await api("/api/unload?force=true", { method: "POST" }); renderStatus(); } catch (e) { banner(e.message); }
+  btn.disabled = false;
 });
 
 // ── models page ───────────────────────────────────────────────────────────

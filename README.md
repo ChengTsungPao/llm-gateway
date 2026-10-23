@@ -177,7 +177,7 @@ providers:
 | POST | `/v1/messages`, `/v1/messages/count_tokens` | Anthropic Messages (Claude Code) |
 | POST | `/v1/responses` | OpenAI Responses (Codex), stateless |
 | GET | `/api/status` | Loaded model, GPU queue, CPU / RAM / GPU / VRAM |
-| POST | `/api/activate`, `/api/unload` | Load a model ahead of time / release the GPU (both wait their turn) |
+| POST | `/api/activate`, `/api/unload` | Load a model ahead of time / release the GPU (both wait their turn; `/api/unload?force=true` releases now and clears leftovers, as the UI's Release button does) |
 | | `/api/agent/...` | Agent sessions for the web UI ([docs/agent.md](docs/agent.md)) |
 
 Requests wait in the GPU queue instead of failing. A request gives up after 30 minutes. Set

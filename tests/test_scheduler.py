@@ -131,3 +131,36 @@ async def test_status_lists_running_queue_and_leases(m):
     assert [q["source"] for q in snap["queue"]] == ["chat", "api"]        # chat ahead in the order
     assert snap["leases"][0]["id"] == "t1"
     await holder
+
+
+class SlowLoad(Fake):
+    async def load(self):
+        Fake.log.append(f"load {self.profile.id}")
+        await asyncio.sleep(10)
+
+
+async def test_a_cancelled_load_does_not_stay_loading(tmp_path):
+    """A caller that disconnects mid-load must not leave "loading" behind (it blocked the queue
+    and Release) nor a half-started server nobody tracks."""
+    Fake.log = []
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"profiles": PROFILES}))
+    m = ModelManager(load_config(p), SlowLoad)
+    task = asyncio.create_task(call(m, "small", [], "a"))
+    await tick()
+    assert m.snapshot()["status"] == "loading"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    snap = m.snapshot()
+    assert (snap["status"], snap["loading"], snap["busy"]) == ("idle", None, False)
+    assert Fake.log == ["load small", "unload small"]
+
+
+async def test_release_now_frees_the_gpu_while_a_lease_holds_it(m):
+    async with m.use("small", source="agent", lease="t1"):
+        pass
+    await m.release_now()                       # unload() would wait for the lease
+    snap = m.snapshot()
+    assert (snap["active"], snap["status"], snap["leases"]) == (None, "idle", [])
+    assert Fake.log == ["load small", "unload small"]

@@ -9,6 +9,7 @@ it already speaks the OpenAI protocol, so requests pass straight through.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
+import psutil
 
 from .config import Config, Profile
 
@@ -382,6 +384,18 @@ class LlamaCppBackend(Backend):
                 return
             async for raw in r.aiter_raw():
                 yield raw
+
+
+async def free_gpu(client: httpx.AsyncClient, cfg: Config) -> None:
+    """Clear what the gateway may have lost track of: non-pinned Ollama models and a llama-server
+    still listening on the gateway's port."""
+    await evict_ollama(client, cfg, keep=None, required=False)
+    for c in psutil.net_connections("tcp"):
+        if c.laddr and c.laddr.port == cfg.llamacpp_port and c.status == psutil.CONN_LISTEN and c.pid:
+            with contextlib.suppress(psutil.Error):
+                proc = psutil.Process(c.pid)
+                proc.kill()
+                await asyncio.to_thread(proc.wait, 10)
 
 
 def make_backend(profile: Profile, cfg: Config, client: httpx.AsyncClient) -> Backend:
