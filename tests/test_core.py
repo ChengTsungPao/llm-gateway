@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from llm_gateway.backends import Backend, BackendError, LlamaCppBackend, _is_pinned, _same_model
-from llm_gateway.config import ConfigError, load_config
+from llm_gateway.config import ConfigError, load_config, read_env_file
 from llm_gateway.manager import ModelManager
 
 
@@ -20,8 +20,11 @@ OLLAMA = {"id": "a", "name": "A", "backend": "ollama", "model": "a:1b", "context
 LLAMA = {"id": "b", "name": "B", "backend": "llamacpp", "model_path": "b.gguf", "context": 8192, "args": ["-ngl", "99"]}
 
 
-def test_example_config_is_valid():
-    cfg = load_config(Path(__file__).parent.parent / "config.example.json")
+def test_example_config_is_valid(monkeypatch):
+    root = Path(__file__).parent.parent
+    for k, v in read_env_file(root / ".env.example").items():
+        monkeypatch.setenv(k, v)
+    cfg = load_config(root / "config.example.json")
     assert cfg.profiles and all(p.context > 0 for p in cfg.profiles)
 
 

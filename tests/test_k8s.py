@@ -60,6 +60,7 @@ async def test_pod_host_runs_each_agent_in_its_own_folder(tmp_path, monkeypatch)
     async def no_pod_needed(agent_id):
         return None
     monkeypatch.setattr(host.pods, "ensure", no_pod_needed)
+    monkeypatch.setattr(host.pods, "delete", no_pod_needed)
     monkeypatch.setattr(host.pods, "status", lambda agent_id: _ready())
 
     def make_app(pod):   # what the pod would run, with /agent pointing at that agent's host folder
