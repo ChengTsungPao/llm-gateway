@@ -190,7 +190,15 @@ details.think div { white-space: pre-wrap; margin-top: 4px; }
 .picker-layer.sheet .picker-item { padding: 12px 14px; min-height: 52px; }
 .picker-title { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 6px 14px 8px; }
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
-@media (prefers-reduced-motion: reduce) { .picker-layer.sheet .picker-menu { animation: none; } }.ag-todos { padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: .85rem; display: grid; gap: 2px; }
+@media (prefers-reduced-motion: reduce) { .picker-layer.sheet .picker-menu { animation: none; } }
+.ag-todos { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: .85rem; }
+.ag-todos summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.ag-todos summary::-webkit-details-marker { display: none; }
+.ag-todos summary::before { content: "▸"; color: var(--muted); }
+.ag-todos details[open] summary::before { content: "▾"; }
+.todo-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.todo-n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.todo-rows { display: grid; gap: 2px; padding-top: 6px; max-height: 30vh; overflow-y: auto; }
 .ag-todos .done { color: var(--muted); text-decoration: line-through; }
 .ag-todos .doing { font-weight: 600; }
 .tool { max-width: min(760px, 100%); width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: .85rem; min-width: 0; }

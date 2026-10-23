@@ -198,11 +198,18 @@ function agToolResult(id, ok, content, dur) {
 function agRenderTodos(todos) {
   const box = $("#agTodos");
   box.hidden = !todos?.length;
-  box.innerHTML = (todos || []).map((t) => {
+  if (!todos?.length) return;
+  // One line while collapsed (the current step and progress), so the list never pushes the chat off the screen.
+  const open = box.querySelector("details")?.open || false;
+  const done = todos.filter((t) => t.status === "completed").length;
+  const now = todos.find((t) => t.status === "in_progress") || todos.find((t) => t.status !== "completed");
+  const rows = todos.map((t) => {
     const cls = t.status === "completed" ? "done" : t.status === "in_progress" ? "doing" : "";
     const mark = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
     return `<div class="${cls}">${mark} ${esc(t.content)}</div>`;
   }).join("");
+  box.innerHTML = `<details${open ? " open" : ""}><summary><span class="todo-now">${esc(now ? now.content : "All done")}</span>
+    <span class="todo-n">${done}/${todos.length}</span></summary><div class="todo-rows">${rows}</div></details>`;
 }
 
 function agRenderHistory(messages) {
