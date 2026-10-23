@@ -3,6 +3,7 @@ name = "llm-gateway"
 version = "0.1.0"
 description = "One OpenAI-compatible endpoint and web UI for local models on a single GPU: Ollama and tuned llama.cpp profiles, one model loaded at a time."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

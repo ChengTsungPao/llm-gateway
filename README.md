@@ -192,3 +192,7 @@ Requests wait in the GPU queue instead of failing. A request gives up after 30 m
 | `uv run --group dev python scripts/agent_eval.py --models <ids>` | Evaluate models as agents (6 tasks × 3 runs) |
 | `uv run python scripts/smoke_test.py [base] <id>` | Quick end-to-end check |
 | `uv run --group dev pytest` | Tests |
+
+## License
+
+[MIT](LICENSE).
