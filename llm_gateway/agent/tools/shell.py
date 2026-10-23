@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,9 @@ from pathlib import Path
 
 from ..errors import ToolError
 from .base import Risk, Tool, ToolContext, ToolOutput, truncate
+
+
+LONG_JOBS = re.compile(r"\bgit\s+(clone|fetch|pull|push|submodule)\b|\b(pip3?|uv|npm|pnpm|yarn|cargo)\s+(install|add|sync|build)\b")
 
 
 def detect_shell() -> list[str]:
@@ -75,7 +79,7 @@ class Bash(Tool):
     risk = Risk.EXEC
     parameters = {"type": "object", "properties": {
         "command": {"type": "string", "description": "The command to run."},
-        "timeout": {"type": "integer", "description": "Seconds before the command is stopped. Default 120, max 1800. "
+        "timeout": {"type": "integer", "description": "Seconds before the command is stopped. Default 120 (900 for git clone/pull and installs), max 1800. "
                                                   "Give long jobs (git clone, npm install, builds) 600 or more."},
     }, "required": ["command"]}
 
@@ -90,7 +94,10 @@ class Bash(Tool):
         return f"$ {args.get('command', '')}"
 
     async def run(self, args: dict, ctx: ToolContext) -> str:
-        timeout = min(max(args.get("timeout") or 120, 1), 1800)
+        # Small models rarely set `timeout`: downloads get a long default, or a clone is killed
+        # at 120 s and retried over its own half-written folder, forever.
+        default = 900 if LONG_JOBS.search(args["command"]) else 120
+        timeout = min(max(args.get("timeout") or default, 1), 1800)
         # GIT_TERMINAL_PROMPT=0: a git command that wants a password fails at once instead of hanging
         code, out = await run_shell(ctx.shell, args["command"], ctx.workspace, timeout, env={"GIT_TERMINAL_PROMPT": "0"})
         out = truncate(out.rstrip(), ctx.max_output_chars) or "(no output)"
