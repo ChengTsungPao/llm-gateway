@@ -196,3 +196,8 @@ Requests wait in the GPU queue instead of failing. A request gives up after 30 m
 ## License
 
 [MIT](LICENSE).
+
+## Built with AI Agents
+
+- **Claude Code**
+- **Antigravity**
