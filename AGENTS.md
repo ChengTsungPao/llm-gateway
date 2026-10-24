@@ -68,6 +68,10 @@ When contributing or committing changes to this repository, AI coding agents (Cl
   ```text
   Co-authored-by: Antigravity <347312419+antigravity-code@users.noreply.github.com>
   ```
+- **Codex**:
+  ```text
+  Co-authored-by: Codex <267193182+codex@users.noreply.github.com>
+  ```
 
 Rules:
 1. Ensure there is a blank line separating the commit message body from the trailers.

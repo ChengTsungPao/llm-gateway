@@ -201,3 +201,4 @@ Requests wait in the GPU queue instead of failing. A request gives up after 30 m
 
 - **Claude Code**
 - **Antigravity**
+- **Codex**
