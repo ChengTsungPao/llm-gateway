@@ -1,0 +1,30 @@
+services:
+  llm-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-gateway:latest
+    container_name: llm-gateway
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8790}:8790"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - GATEWAY_HOST=0.0.0.0
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./.env:/app/.env:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

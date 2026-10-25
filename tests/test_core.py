@@ -26,6 +26,11 @@ def test_example_config_is_valid(monkeypatch):
         monkeypatch.setenv(k, v)
     cfg = load_config(root / "config.example.json")
     assert cfg.profiles and all(p.context > 0 for p in cfg.profiles)
+    assert cfg.ollama_url == "http://127.0.0.1:11434"
+
+    monkeypatch.setenv("OLLAMA_URL", "http://host.docker.internal:11434")
+    cfg_docker = load_config(root / "config.example.json")
+    assert cfg_docker.ollama_url == "http://host.docker.internal:11434"
 
 
 def test_rejects_bad_profiles(tmp_path):
