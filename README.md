@@ -76,6 +76,15 @@ cp config.example.json config.json   # model profiles; refers to .env as ${NAME}
 uv run llm-gateway                   # then open http://127.0.0.1:8790
 ```
 
+### Run with Docker
+
+To run the gateway as a background container with automatic restart (`unless-stopped`):
+
+```bash
+docker compose up -d
+```
+Access the gateway on `http://127.0.0.1:8790`. It communicates with host Ollama via `http://host.docker.internal:11434`.
+
 Phone: set `GATEWAY_HOST=0.0.0.0` and open `http://<pc-address>:8790` over your LAN or Tailscale.
 Agent pods: enable Kubernetes in Docker Desktop and build the image
 (`docker build -f deploy/agent.Dockerfile -t llm-gateway-agent:latest .`).

@@ -20,3 +20,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Run tests
         run: uv run --python 3.12 --group dev pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t llm-gateway:ci .

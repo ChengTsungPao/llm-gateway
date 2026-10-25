@@ -6,7 +6,7 @@
     "auto_compact": true
   },
   "ollama": {
-    "url": "http://127.0.0.1:11434",
+    "url": "${OLLAMA_URL:-http://127.0.0.1:11434}",
     "pinned": [
       "bge-m3"
     ]

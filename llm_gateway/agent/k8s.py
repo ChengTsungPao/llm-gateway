@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -41,6 +42,11 @@ POD_PORT = 8000
 def host_path(path: Path, prefix: str) -> str:
     """Windows path -> the path Docker Desktop's Kubernetes node sees it under.
     D:\\a\\b -> /run/desktop/mnt/host/d/a/b. Other systems: unchanged."""
+    host_data = os.environ.get("HOST_DATA_DIR")
+    if host_data and path.as_posix().startswith("/app/data"):
+        rel = path.as_posix()[len("/app/data") :].lstrip("/")
+        p = PureWindowsPath(host_data) / rel
+        return f"{prefix.rstrip('/')}/{p.drive.rstrip(':').lower()}/" + "/".join(p.parts[1:])
     if sys.platform != "win32":
         return str(path)
     p = PureWindowsPath(path)
