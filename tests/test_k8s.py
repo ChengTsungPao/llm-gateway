@@ -20,6 +20,12 @@ def test_windows_paths_map_to_docker_desktop_node():
         "/run/desktop/mnt/host/d/program/Github/x/data/agents/a1"
 
 
+def test_docker_container_paths_map_to_docker_desktop_node(monkeypatch):
+    monkeypatch.setenv("HOST_DATA_DIR", r"D:\program\Github\x\data")
+    assert host_path(Path("/app/data/agents/a1"), "/run/desktop/mnt/host") == \
+        "/run/desktop/mnt/host/d/program/Github/x/data/agents/a1"
+
+
 def test_pod_manifest_is_a_sandbox(tmp_path):
     m = PodManager(K8sConfig(agents_dir=tmp_path), {"GATEWAY_URL": "http://gw/v1"}).manifest("20261022-ABC_1")
     assert m["metadata"]["name"] == pod_name("20261022-ABC_1") == "agent-20261022-abc-1"

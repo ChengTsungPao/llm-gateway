@@ -14,11 +14,13 @@ services:
     environment:
       - GATEWAY_HOST=0.0.0.0
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - HOST_DATA_DIR=${HOST_DATA_DIR:-}
     volumes:
       - ./config.json:/app/config.json:ro
       - ./.env:/app/.env:ro
       - ./data:/app/data
       - ./logs:/app/logs
+      - ~/.kube:/root/.kube:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     deploy:
