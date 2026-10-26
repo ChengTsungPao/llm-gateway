@@ -128,8 +128,62 @@ function renderStatus() {
   else if ($("#banner").textContent.startsWith("Model failed to load")) banner("");
   renderResources();
   renderModels();
+  renderJobs();
   renderChatHead();
 }
+
+// ── async jobs: today's numbers, the queue and the dead letters (jobs.py) ─────────────────────
+let deadLetters = [], deadFetchedAt = 0;
+function renderJobs() {
+  const j = status.jobs, board = $("#jbBoard");
+  board.hidden = !j;
+  if (!j) return;
+  const q = j.queue, queued = q.high + q.normal + q.idle_only, run = j.running;
+  const dead = j.suspended + j.failed;
+  const card = (k, v, sub = "", cls = "") => `<div class="jb-card ${cls}"><span class="jb-k">${k}</span><span class="jb-v">${v}</span>${sub ? `<small>${sub}</small>` : ""}</div>`;
+  $("#jbCards").innerHTML = [
+    card("Requests today", j.today_requests),
+    card("Succeeded", j.today_success, "", j.today_success ? "ok" : ""),
+    card("Failed", j.today_failed, dead ? `${dead} waiting in dead letters` : "", j.today_failed ? "bad" : ""),
+    card("Queued", queued, `high ${q.high} · normal ${q.normal} · idle ${q.idle_only}${j.waiting_retry ? ` · ${j.waiting_retry} retrying` : ""}`),
+    card("Running", run ? esc(prof(run.model)?.name || run.model) : "—", run ? `${run.priority} · attempt ${run.attempts + 1}` : "no background job", run ? "run" : ""),
+  ].join("");
+  $("#jbDeadN").textContent = String(dead);
+  $("#jbDeadN").classList.toggle("bad", dead > 0);
+  if (store.get("view", "chat") === "models") refreshDead(false);
+}
+async function refreshDead(force) {
+  const n = status.jobs.suspended + status.jobs.failed;
+  if (!n) { deadLetters = []; renderDead(); return; }
+  if (!force && deadLetters.length === n && Date.now() - deadFetchedAt < 10000) return;
+  deadFetchedAt = Date.now();
+  try { deadLetters = (await api("/v1/jobs?status=suspended,failed&limit=100")).jobs; renderDead(); } catch (e) { /* the next poll retries */ }
+}
+function renderDead() {
+  const ago = (t) => { const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+  $("#jbDeadList").innerHTML = deadLetters.length ? deadLetters.map((d) => `<li class="jb-dead-row">
+    <div class="jb-dead-main"><b>${esc(prof(d.model)?.name || d.model)}</b><span class="jb-tag">${esc(d.priority)}</span><span class="jb-tag ${d.status === "suspended" ? "warn" : "bad"}">${d.status === "suspended" ? "gave up after " + d.attempts + " tries" : "rejected"}</span>
+      <small>${esc(d.dedup_key || d.id)} · ${ago(d.finished || d.created)}</small>
+      <p class="jb-err">${esc(d.error_kind || "error")}: ${esc(d.error || "")}</p></div>
+    <div class="jb-dead-actions"><button type="button" class="ghost" data-act="resume" data-id="${esc(d.id)}">Resume</button><button type="button" class="ghost danger" data-act="discard" data-id="${esc(d.id)}">Discard</button></div></li>`).join("")
+    : `<li class="jb-empty">Nothing here.</li>`;
+}
+$("#jbDeadList").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  if (btn.dataset.act === "discard" && btn.dataset.armed !== "1") {      // dropping a job is for good: ask once
+    btn.dataset.armed = "1"; btn.textContent = "Confirm?";
+    setTimeout(() => { if (btn.isConnected) { btn.dataset.armed = ""; btn.textContent = "Discard"; } }, 4000);
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api(`/v1/jobs/${encodeURIComponent(btn.dataset.id)}${btn.dataset.act === "resume" ? "/resume" : ""}`,
+      { method: btn.dataset.act === "resume" ? "POST" : "DELETE" });
+    await refreshDead(true);
+    pollStatus();
+  } catch (err) { banner(err.message); btn.disabled = false; }
+});
 // CPU, RAM, GPU and VRAM of the machine running the gateway (refreshed with the 2-second status poll).
 function renderResources() {
   const s = status.system, g = status.gpu;
