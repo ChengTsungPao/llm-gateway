@@ -11,8 +11,9 @@ Memory Hub's memory extraction. Code: `llm_gateway/jobs.py`; routes in `server.p
 | GET | `/v1/jobs/{id}` | The job; `result` (the Chat Completions response) once `succeeded`. `404` if the job does not exist: treat it as lost and submit again. |
 | GET | `/v1/jobs` | List, newest first. Filters: `status=suspended,failed`, `priority`, `key_prefix`, `limit`. |
 | GET | `/v1/jobs/stats` | `today_requests`, `today_success`, `today_failed` (counted from `since`, the gateway's local midnight), queued per priority, `waiting` (up to 20 queued jobs in run order), the running job, dead letters. Also in `/api/status` as `jobs`. |
-| POST | `/v1/jobs/{id}/resume` | Run a `suspended` or `failed` job again (attempts start over; counts as a request today). |
+| POST | `/v1/jobs/{id}/resume` | Run a `suspended` or `failed` job again (attempts start over; the same request, not a new one). |
 | DELETE | `/v1/jobs/{id}` | Discard a job for good (not while it runs). |
+| GET | `/v1/jobs/events` | What happened to dead letters, newest first: `dead_letter`, `resumed`, `recovered`, `discarded`. Filters: `job_id`, `limit`. Kept 90 days, also after the job itself is deleted. |
 
 ## Behaviour
 
@@ -26,6 +27,10 @@ Memory Hub's memory extraction. Code: `llm_gateway/jobs.py`; routes in `server.p
 - **Retries.** Timeouts, 429, 5xx, connection errors and "model busy" are retried with an exponential
   backoff (30 s, 60 s, 120 s, ... up to 15 min, with jitter). After `max_attempts` (default 5) the job is
   `suspended`: a dead letter. 400, 401, 403, 404 and 422 are `failed` at once.
+- **Counting a dead letter.** It counts as failed on the day it fails. If it is resumed (or submitted
+  again) and then succeeds, that same day counts it as a success instead, so every day's requests equal
+  its successes, failures and jobs still open. A discarded dead letter stays counted as failed. Each
+  step is written to `/v1/jobs/events` and the gateway log; the job keeps `dead_count`.
 - **Idempotency.** Submitting a `dedup_key` that exists returns that job instead of a new one. A `failed`
   job submitted again is run again; a `discarded` one stays discarded, so its submitter can tell that
   the user dropped that work.

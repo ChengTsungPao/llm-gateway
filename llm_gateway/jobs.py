@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
 import sqlite3
@@ -54,7 +55,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, priority, created);
 CREATE TABLE IF NOT EXISTS daily (day TEXT PRIMARY KEY, requests INTEGER NOT NULL DEFAULT 0,
                                   success INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0);
+-- what happened to dead letters (dead_letter, resumed, recovered, discarded); kept after the job is deleted
+CREATE TABLE IF NOT EXISTS job_events (at REAL NOT NULL, job_id TEXT NOT NULL, dedup_key TEXT,
+                                       event TEXT NOT NULL, detail TEXT);
 """
+# columns added after the first release; added to an existing jobs.db on open
+MIGRATIONS = {"dead_count": "INTEGER NOT NULL DEFAULT 0",   # times the job ended as a dead letter
+              "dead_day": "TEXT"}                            # the day its failure is counted, until it recovers
+EVENT_KEEP_DAYS = 90
+
+log = logging.getLogger("uvicorn.error")
 
 Runner = Callable[[dict, Callable[[], None]], Awaitable[dict]]
 
@@ -95,6 +105,10 @@ class JobQueue:
         self._db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         self._db.executescript(SCHEMA)
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(jobs)")}
+        for column, decl in MIGRATIONS.items():
+            if column not in have:
+                self._db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {decl}")
         self.runner, self.is_idle = runner, is_idle
         self.max_attempts, self.backoff_base_s, self.backoff_cap_s = max_attempts, backoff_base_s, backoff_cap_s
         self.timeout_s, self.poll_s, self.keep_days = timeout_s, poll_s, keep_days
@@ -111,6 +125,7 @@ class JobQueue:
             self._db.execute("UPDATE jobs SET status='queued', next_run_at=? WHERE status='running'", (time.time(),))
             self._db.execute("DELETE FROM jobs WHERE status IN ('succeeded','discarded') AND finished < ?",
                              (time.time() - self.keep_days * 86400,))
+            self._db.execute("DELETE FROM job_events WHERE at < ?", (time.time() - EVENT_KEEP_DAYS * 86400,))
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._loop())
@@ -141,7 +156,7 @@ class JobQueue:
                 self._db.execute("UPDATE jobs SET status='queued', attempts=0, error=NULL, error_kind=NULL, "
                                  "next_run_at=?, body=?, priority=?, model=?, finished=NULL WHERE id=?",
                                  (now, json.dumps(body), priority, model, row["id"]))
-                self._bump("requests")
+                self._event(row, "resumed", "submitted again")    # the same request run again: not a new one
                 job_id = row["id"]
             else:
                 job_id = uuid.uuid4().hex[:16]
@@ -183,7 +198,8 @@ class JobQueue:
                 raise JobConflict(f"job is {row['status']}; only a suspended or failed job can be resumed")
             self._db.execute("UPDATE jobs SET status='queued', attempts=0, error=NULL, error_kind=NULL, "
                              "next_run_at=?, finished=NULL WHERE id=?", (time.time(), job_id))
-            self._bump("requests")    # a new run, counted today like a resubmit: success never outnumbers requests
+            # the same request run again, not a new one: if it succeeds, its counted failure becomes a success
+            self._event(row, "resumed", f"was {row['status']}: {row['error_kind'] or 'error'}")
             view = self._view(self._row(job_id))
         self._wake.set()
         return view
@@ -197,6 +213,7 @@ class JobQueue:
                 raise JobConflict("the job is running; wait for it to finish")
             self._db.execute("UPDATE jobs SET status='discarded', body='{}', result=NULL, finished=? WHERE id=?",
                              (time.time(), job_id))
+            self._event(row, "discarded", f"was {row['status']}")   # a dropped dead letter stays counted as failed
             return self._view(self._row(job_id))
 
     def stats(self) -> dict:
@@ -287,9 +304,17 @@ class JobQueue:
             self._failed(job_id, e)
         else:
             with self._lock:
+                prev = self._row(job_id)
                 self._db.execute("UPDATE jobs SET status='succeeded', result=?, error=NULL, error_kind=NULL, "
-                                 "finished=? WHERE id=?", (json.dumps(result), time.time(), job_id))
-                self._bump("success")
+                                 "finished=?, dead_day=NULL WHERE id=?", (json.dumps(result), time.time(), job_id))
+                if prev["dead_day"]:
+                    # a dead letter that recovered: on the day its failure was counted, it becomes a success
+                    self._bump("failed", day=prev["dead_day"], by=-1)
+                    self._bump("success", day=prev["dead_day"])
+                    self._event(prev, "recovered", f"succeeded after {prev['dead_count']} dead letter(s); "
+                                                   f"failure of {prev['dead_day']} now counted as a success")
+                else:
+                    self._bump("success")
         finally:
             self.current = None
 
@@ -306,16 +331,34 @@ class JobQueue:
                                  "started=NULL WHERE id=?", (attempts, message, kind, time.time() + delay, job_id))
             else:
                 status = "suspended" if retryable else "failed"
-                self._db.execute("UPDATE jobs SET status=?, attempts=?, error=?, error_kind=?, finished=? WHERE id=?",
-                                 (status, attempts, message, kind, time.time(), job_id))
-                self._bump("failed")
+                day = time.strftime("%Y-%m-%d")
+                # a job that failed before and was resumed keeps the day its failure is already counted on
+                counted = row["dead_day"]
+                self._db.execute("UPDATE jobs SET status=?, attempts=?, error=?, error_kind=?, finished=?, "
+                                 "dead_count=dead_count+1, dead_day=? WHERE id=?",
+                                 (status, attempts, message, kind, time.time(), counted or day, job_id))
+                if not counted:
+                    self._bump("failed")
+                self._event(row, "dead_letter", f"{status} after {attempts} attempt(s): {kind}: {message[:200]}")
 
     # ── helpers ───────────────────────────────────────────────────────────
 
-    def _bump(self, column: str) -> None:      # caller holds the lock
-        day = time.strftime("%Y-%m-%d")
+    def _bump(self, column: str, day: str | None = None, by: int = 1) -> None:      # caller holds the lock
+        day = day or time.strftime("%Y-%m-%d")
         self._db.execute("INSERT OR IGNORE INTO daily (day) VALUES (?)", (day,))
-        self._db.execute(f"UPDATE daily SET {column}={column}+1 WHERE day=?", (day,))
+        self._db.execute(f"UPDATE daily SET {column}=MAX(0, {column}+?) WHERE day=?", (by, day))
+
+    def _event(self, row: sqlite3.Row, event: str, detail: str) -> None:      # caller holds the lock
+        self._db.execute("INSERT INTO job_events (at, job_id, dedup_key, event, detail) VALUES (?,?,?,?,?)",
+                         (time.time(), row["id"], row["dedup_key"], event, detail))
+        log.info("job %s %s (%s): %s", row["id"], event, row["dedup_key"] or "-", detail)
+
+    def events(self, job_id: str | None = None, limit: int = 100) -> list[dict]:
+        sql, args = "SELECT * FROM job_events", []
+        if job_id:
+            sql, args = sql + " WHERE job_id=?", [job_id]
+        with self._lock:
+            return [dict(r) for r in self._db.execute(sql + " ORDER BY at DESC LIMIT ?", (*args, limit))]
 
     def _row(self, job_id: str) -> sqlite3.Row:
         row = self._db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -329,7 +372,7 @@ class JobQueue:
     def _view(self, row: sqlite3.Row, with_result: bool = True) -> dict:
         view = {k: row[k] for k in ("id", "dedup_key", "priority", "model", "status", "attempts", "max_attempts",
                                     "timeout_s", "next_run_at", "error", "error_kind", "created", "started",
-                                    "finished")}
+                                    "finished", "dead_count")}
         view["job_id"] = row["id"]
         if row["status"] == "queued":
             ahead = self._db.execute(
