@@ -183,6 +183,7 @@ class JobQueue:
                 raise JobConflict(f"job is {row['status']}; only a suspended or failed job can be resumed")
             self._db.execute("UPDATE jobs SET status='queued', attempts=0, error=NULL, error_kind=NULL, "
                              "next_run_at=?, finished=NULL WHERE id=?", (time.time(), job_id))
+            self._bump("requests")    # a new run, counted today like a resubmit: success never outnumbers requests
             view = self._view(self._row(job_id))
         self._wake.set()
         return view

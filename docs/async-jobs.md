@@ -11,7 +11,7 @@ Memory Hub's memory extraction. Code: `llm_gateway/jobs.py`; routes in `server.p
 | GET | `/v1/jobs/{id}` | The job; `result` (the Chat Completions response) once `succeeded`. `404` if the job does not exist: treat it as lost and submit again. |
 | GET | `/v1/jobs` | List, newest first. Filters: `status=suspended,failed`, `priority`, `key_prefix`, `limit`. |
 | GET | `/v1/jobs/stats` | `today_requests`, `today_success`, `today_failed` (counted from `since`, the gateway's local midnight), queued per priority, `waiting` (up to 20 queued jobs in run order), the running job, dead letters. Also in `/api/status` as `jobs`. |
-| POST | `/v1/jobs/{id}/resume` | Run a `suspended` or `failed` job again (attempts start over). |
+| POST | `/v1/jobs/{id}/resume` | Run a `suspended` or `failed` job again (attempts start over; counts as a request today). |
 | DELETE | `/v1/jobs/{id}` | Discard a job for good (not while it runs). |
 
 ## Behaviour

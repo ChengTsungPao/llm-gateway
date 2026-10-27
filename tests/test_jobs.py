@@ -144,6 +144,7 @@ async def test_retryable_errors_back_off_then_suspend_and_resume_runs_again(tmp_
     assert q.resume(j["id"])["status"] == "queued"
     assert (await finished(q, j["id"]))["status"] == "succeeded"
     assert q.stats()["suspended"] == 0 and q.stats()["today_success"] == 1
+    assert q.stats()["today_requests"] == 2              # the resume is a request too: one per outcome
     await q.close()
 
 
