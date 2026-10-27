@@ -46,7 +46,7 @@ Memory Hub's memory extraction. Code: `llm_gateway/jobs.py`; routes in `server.p
 
 ## UI
 
-The Models page shows today's requests, successes, failures and queued jobs as one row of cards, with
+The Models page shows today's requests, successes, failures and the job queue (queued jobs plus the one running) as one row of cards, with
 the time the counts start from (the gateway's midnight: set `TZ` in `.env`, e.g. `TZ=Asia/Taipei`, or
 it is UTC midnight in Docker). Queued background jobs are listed under the running job in the
 Resources panel, in the order they will run. The dead letters are listed with **Resume** and
