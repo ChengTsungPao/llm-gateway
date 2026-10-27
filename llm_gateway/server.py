@@ -261,6 +261,11 @@ def create_app(cfg: Config) -> FastAPI:
     async def job_stats():
         return jobs.stats()
 
+    @app.get("/v1/jobs/events", dependencies=[Depends(require_key)])
+    async def job_events(job_id: str = "", limit: int = 100):
+        """What happened to dead letters: dead_letter, resumed, recovered, discarded (newest first)."""
+        return {"events": jobs.events(job_id or None, limit)}
+
     @app.get("/v1/jobs", dependencies=[Depends(require_key)])
     async def job_list(status: str = "", priority: str = "", key_prefix: str = "", limit: int = 100):
         statuses = [s for s in status.split(",") if s]

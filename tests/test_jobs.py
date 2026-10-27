@@ -143,9 +143,53 @@ async def test_retryable_errors_back_off_then_suspend_and_resume_runs_again(tmp_
     calls["fail"] = False
     assert q.resume(j["id"])["status"] == "queued"
     assert (await finished(q, j["id"]))["status"] == "succeeded"
-    assert q.stats()["suspended"] == 0 and q.stats()["today_success"] == 1
-    assert q.stats()["today_requests"] == 2              # the resume is a request too: one per outcome
+    s = q.stats()                     # the same request, recovered: its failure is now counted as a success
+    assert s["suspended"] == 0 and (s["today_requests"], s["today_success"], s["today_failed"]) == (1, 1, 0)
+    assert q.get(j["id"])["dead_count"] == 1
+    events = [e["event"] for e in q.events(j["id"])]
+    assert events == ["recovered", "resumed", "dead_letter"]     # newest first; kept as the record
     await q.close()
+
+
+async def test_a_dead_letter_recovered_on_a_later_day_moves_on_the_day_it_failed(tmp_path):
+    fail = {"on": True}
+
+    async def runner(job, mark_running):
+        mark_running()
+        if fail["on"]:
+            raise asyncio.TimeoutError
+        return OK
+
+    q = make(tmp_path, runner, max_attempts=1)
+    q.start()
+    j = q.submit({}, model="m")
+    await finished(q, j["id"])
+    with q._lock:                     # pretend it was submitted and failed yesterday
+        q._db.execute("UPDATE jobs SET dead_day='2000-01-01' WHERE id=?", (j["id"],))
+        q._db.execute("UPDATE daily SET day='2000-01-01'")
+    fail["on"] = False
+    q.resume(j["id"])
+    assert (await finished(q, j["id"]))["status"] == "succeeded"
+    with q._lock:
+        old = q._db.execute("SELECT requests, success, failed FROM daily WHERE day='2000-01-01'").fetchone()
+    assert tuple(old) == (1, 1, 0)                                     # yesterday: failure became a success
+    s = q.stats()
+    assert (s["today_requests"], s["today_success"], s["today_failed"]) == (0, 0, 0)   # today untouched
+    await q.close()
+
+
+def test_an_existing_jobs_db_gains_the_new_columns(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "jobs.db")       # the schema of the first release, with one job in it
+    db.executescript("""CREATE TABLE jobs (id TEXT PRIMARY KEY, dedup_key TEXT UNIQUE, priority TEXT NOT NULL,
+        model TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL, timeout_s REAL NOT NULL, next_run_at REAL NOT NULL, error TEXT,
+        error_kind TEXT, result TEXT, created REAL NOT NULL, started REAL, finished REAL);
+        INSERT INTO jobs VALUES ('old', 'k', 'normal', 'm', '{}', 'suspended', 5, 5, 60, 0, 'e', 'timeout',
+                                 NULL, 0, NULL, 0);""")
+    db.close()
+    q = make(tmp_path, lambda job, mark: None)
+    assert q.get("old")["dead_count"] == 0 and q.events() == []
 
 
 async def test_fatal_errors_fail_at_once_without_retrying(tmp_path):
@@ -290,6 +334,8 @@ def test_http_submit_poll_list_stats_resume_discard(tmp_path):
     assert "jobs" in c.get("/api/status").json()
     assert c.post(f"/v1/jobs/{job['id']}/resume").status_code == 409     # only for suspended or failed
     assert c.delete(f"/v1/jobs/{job['id']}").json()["status"] == "discarded"
+    ev = c.get("/v1/jobs/events", params={"job_id": job["id"]}).json()["events"]   # not taken as a job id
+    assert [e["event"] for e in ev] == ["discarded"]
 
 
 def test_http_errors(tmp_path):
