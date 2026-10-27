@@ -107,6 +107,15 @@
   <!-- Models -->
   <section class="view" id="view-models">
     <div class="page">
+      <div class="jb" id="jbBoard" hidden>
+        <p class="jb-since" id="jbSince"></p>
+        <div class="jb-cards" id="jbCards"></div>
+        <details class="jb-dead" id="jbDead">
+          <summary>Dead letters <span class="jb-count" id="jbDeadN">0</span></summary>
+          <p class="jb-note">Background jobs that kept failing. Resume runs one again; Discard drops it for good.</p>
+          <ul id="jbDeadList"></ul>
+        </details>
+      </div>
       <div class="page-head">
         <h1>Models</h1>
         <p>One model is loaded at a time; loading another unloads the current one first. Speeds are generation speeds (tok/s) measured through this gateway on two prompts, Chinese chat and English code, because speed-ups such as speculative decoding work very differently on different content. The dashed line is 30 tok/s. Re-measure with <code>scripts/measure.py</code>.</p>

@@ -29,6 +29,7 @@ from .agent.service import AgentService
 from .backends import BackendError, evict_ollama, free_gpu, make_backend
 from .compaction import Compactor
 from .config import Config
+from .jobs import PRIORITIES, JobConflict, JobNotFound, JobQueue
 from .manager import ModelBusy, ModelManager
 from .protocols import anthropic, responses
 from .protocols.stream import events as stream_events
@@ -93,7 +94,9 @@ def create_app(cfg: Config) -> FastAPI:
         # "No model loaded"; start from a clean GPU (pinned models stay).
         await evict_ollama(client, cfg, keep=None, required=False)
         dispatcher.start()
+        jobs.start()
         yield
+        await jobs.close()
         await dispatcher.close()
         await host.close()
         await runtime.close()
@@ -152,8 +155,8 @@ def create_app(cfg: Config) -> FastAPI:
                 key = item.get("lease") or item.get("id")
                 if key in titles:
                     item["title"] = titles[key]
-        return {**snap, "tasks": dispatcher.snapshot(), "gpu": gpu_cache["v"], "system": gpu_cache["sys"],
-                "auth_required": bool(cfg.api_key)}
+        return {**snap, "tasks": dispatcher.snapshot(), "jobs": jobs.stats(), "gpu": gpu_cache["v"],
+                "system": gpu_cache["sys"], "auth_required": bool(cfg.api_key)}
 
     @app.get("/api/profiles", dependencies=[Depends(require_key)])
     async def profiles():
@@ -209,6 +212,79 @@ def create_app(cfg: Config) -> FastAPI:
             return d["choices"][0]["message"].get("content") or ""
 
         return await compactor.compact(body, profile.context, summarize)
+
+    # ── async jobs (jobs.py): submit now, poll later, one at a time ───────
+
+    async def run_job(job: dict, mark_running) -> dict:
+        profile = cfg.profile(job["model"])
+        if profile is None:
+            raise KeyError(job["model"])
+        # waiting for the scheduler and for the model to load is not part of the timeout; generating is
+        async with manager.use(profile.id, source=job["source"], request_id=job["id"]) as backend:
+            mark_running()
+            body, _ = await fit_context(backend, profile, dict(job["body"], model=profile.id, stream=False))
+            return await asyncio.wait_for(backend.chat(body), job["timeout_s"])
+
+    def gpu_idle() -> bool:
+        """Nothing is queued, loading or running, no agent task holds the model: background scavenging may go."""
+        snap = manager.snapshot()
+        return not snap["busy"] and not snap["leases"] and not dispatcher.snapshot().get("running")
+
+    jobs = JobQueue(cfg.jobs.db, run_job, gpu_idle, max_attempts=cfg.jobs.max_attempts,
+                    backoff_base_s=cfg.jobs.backoff_base_s, backoff_cap_s=cfg.jobs.backoff_cap_s,
+                    timeout_s=cfg.jobs.timeout_s)
+
+    @app.post("/v1/async/chat/completions", dependencies=[Depends(require_key)], status_code=202)
+    async def async_chat(body: dict):
+        """A chat request that does not wait: returns a job id; poll GET /v1/jobs/{id}. Extra fields:
+        priority (high | normal | idle_only), dedup_key (the same key returns the same job), timeout_s,
+        max_attempts."""
+        model_id = body.pop("model", None) or manager.active_id
+        if not model_id:
+            raise HTTPException(400, "no 'model' given and no model is active")
+        profile = profile_or_404(model_id)
+        options = {k: body.pop(k, None) for k in ("priority", "dedup_key", "timeout_s", "max_attempts")}
+        priority = options["priority"] or "normal"
+        if priority not in PRIORITIES:
+            raise HTTPException(400, f"priority must be one of {list(PRIORITIES)}")
+        body["stream"] = False
+        return jobs.submit(body, model=profile.id, priority=priority, dedup_key=options["dedup_key"] or None,
+                           timeout_s=options["timeout_s"], max_attempts=options["max_attempts"])
+
+    def job_or_404(job_id: str, with_result: bool = True) -> dict:
+        try:
+            return jobs.get(job_id, with_result=with_result)
+        except JobNotFound:
+            raise HTTPException(404, f"no job '{job_id}' (the gateway may have been reset)") from None
+
+    @app.get("/v1/jobs/stats", dependencies=[Depends(require_key)])
+    async def job_stats():
+        return jobs.stats()
+
+    @app.get("/v1/jobs", dependencies=[Depends(require_key)])
+    async def job_list(status: str = "", priority: str = "", key_prefix: str = "", limit: int = 100):
+        statuses = [s for s in status.split(",") if s]
+        return {"jobs": jobs.list(statuses or None, priority or None, key_prefix or None, limit)}
+
+    @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_key)])
+    async def job_get(job_id: str):
+        return job_or_404(job_id)
+
+    @app.post("/v1/jobs/{job_id}/resume", dependencies=[Depends(require_key)])
+    async def job_resume(job_id: str):
+        job_or_404(job_id, with_result=False)
+        try:
+            return jobs.resume(job_id)
+        except JobConflict as e:
+            raise HTTPException(409, str(e)) from e
+
+    @app.delete("/v1/jobs/{job_id}", dependencies=[Depends(require_key)])
+    async def job_discard(job_id: str):
+        job_or_404(job_id, with_result=False)
+        try:
+            return jobs.discard(job_id)
+        except JobConflict as e:
+            raise HTTPException(409, str(e)) from e
 
     @app.post("/v1/chat/completions", dependencies=[Depends(require_key)])
     async def chat_completions(body: dict, request: Request):

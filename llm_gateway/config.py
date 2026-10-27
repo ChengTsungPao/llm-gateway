@@ -91,6 +91,16 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
+class JobsConfig:
+    """The `jobs` section: the async job queue (jobs.py, docs/async-jobs.md)."""
+    max_attempts: int = 5            # tries (including the first) before a retryable failure is suspended
+    backoff_base_s: float = 30       # wait before the 2nd try; doubles each time
+    backoff_cap_s: float = 900
+    timeout_s: float = 900           # execution timeout, counted from the moment generation starts
+    db: Path | None = None           # default: <agent.data_dir>/jobs.db
+
+
+@dataclass(frozen=True)
 class Config:
     host: str
     port: int
@@ -104,6 +114,7 @@ class Config:
     profiles: tuple[Profile, ...] = field(default_factory=tuple)
     auto_compact: bool = True
     agent: AgentConfig = field(default_factory=AgentConfig)
+    jobs: JobsConfig = field(default_factory=JobsConfig)
 
     def profile(self, profile_id: str) -> Profile | None:
         return next((p for p in self.profiles if p.id == profile_id), None)
@@ -200,6 +211,17 @@ def load_config(path: Path) -> Config:
     if not log_dir.is_absolute():
         log_dir = path.parent / log_dir
     agent = _agent(raw.get("agent", {}), path.parent)
+    jobs_raw = raw.get("jobs", {})
+    unknown_jobs = set(jobs_raw) - set(JobsConfig.__dataclass_fields__)
+    if unknown_jobs:
+        raise ConfigError(f"jobs: unknown keys {sorted(unknown_jobs)}")
+    jobs = JobsConfig(
+        max_attempts=max(1, int(jobs_raw.get("max_attempts", 5))),
+        backoff_base_s=float(jobs_raw.get("backoff_base_s", 30)),
+        backoff_cap_s=float(jobs_raw.get("backoff_cap_s", 900)),
+        timeout_s=float(jobs_raw.get("timeout_s", 900)),
+        db=Path(jobs_raw["db"]) if jobs_raw.get("db") else agent.data_dir / "jobs.db",
+    )
     return Config(
         host=server.get("host", "127.0.0.1"),
         port=int(server.get("port", 8790)),
@@ -213,6 +235,7 @@ def load_config(path: Path) -> Config:
         profiles=profiles,
         auto_compact=bool(server.get("auto_compact", True)),
         agent=agent,
+        jobs=jobs,
     )
 
 
