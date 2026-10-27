@@ -138,9 +138,12 @@ function renderJobs() {
   const j = status.jobs, board = $("#jbBoard");
   board.hidden = !j;
   if (!j) return;
-  // a job whose model is loading is still "queued" in jobs.py, but the top of the page shows it as Running
-  const q = j.queue, loading = (j.waiting || []).some((w) => w.id === status.running?.request_id);
-  const queued = q.high + q.normal + q.idle_only - (loading ? 1 : 0);
+  // the job queue: queued jobs (one whose model is loading included) plus the one generating
+  const q = j.queue, active = j.running ? 1 : 0;
+  const queued = q.high + q.normal + q.idle_only + active;
+  const running = active + ((j.waiting || []).some((w) => w.id === status.running?.request_id) ? 1 : 0);
+  const queuedSub = [running ? `${running} running` : "",
+    j.waiting_retry ? `${j.waiting_retry} retrying` : ""].filter(Boolean).join(" · ");
   const dead = j.suspended + j.failed;
   const card = (k, v, sub = "", cls = "") => `<div class="jb-card ${cls}"><span class="jb-k">${k}</span><span class="jb-v">${v}</span>${sub ? `<small>${sub}</small>` : ""}</div>`;
   // the counters run from the gateway's local midnight; say when that was in the viewer's time
@@ -152,7 +155,7 @@ function renderJobs() {
     card("Requests", j.today_requests),
     card("Succeeded", j.today_success, "", j.today_success ? "ok" : ""),
     card("Failed", j.today_failed, dead ? `${dead} dead` : "", j.today_failed ? "bad" : ""),
-    card("Queued", queued, j.waiting_retry ? `${j.waiting_retry} retrying` : ""),
+    card("Queued", queued, queuedSub),
   ].join("");
   $("#jbDeadN").textContent = String(dead);
   $("#jbDeadN").classList.toggle("bad", dead > 0);
