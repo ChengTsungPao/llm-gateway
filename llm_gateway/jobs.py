@@ -208,9 +208,19 @@ class JobQueue:
             waiting_retry = self._db.execute("SELECT COUNT(*) FROM jobs WHERE status='queued' AND attempts>0"
                                              ).fetchone()[0]
             running_view = self._view(running, with_result=False) if running else None
+            queued = list(self._db.execute("SELECT id, model, priority, attempts, created, next_run_at FROM jobs "
+                                           "WHERE status='queued'"))
         by_status = lambda s: sum(n for (st, _), n in counts.items() if st == s)  # noqa: E731
+        now = time.time()
+        queued.sort(key=lambda r: (RANK[r["priority"]], r["created"]))      # the order _pick runs them in
+        waiting = [{"id": r["id"], "model": r["model"], "priority": r["priority"], "attempts": r["attempts"],
+                    "waiting_s": max(0, round(now - r["next_run_at"])),     # since it became runnable (resume too)
+                    "retry_in_s": max(0, round(r["next_run_at"] - now)) if r["attempts"] else 0}
+                   for r in queued[:20]]
         return {
             "date": day,
+            "since": time.mktime(time.strptime(day, "%Y-%m-%d")),   # the counters cover local midnight → now
+            "waiting": waiting,
             "today_requests": d["requests"] if d else 0,
             "today_success": d["success"] if d else 0,
             "today_failed": d["failed"] if d else 0,

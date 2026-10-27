@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -71,6 +72,9 @@ async def test_one_job_at_a_time_in_priority_order(tmp_path):
     ids = [q.submit({"n": n}, model="m", priority=p)["id"]
            for n, p in (("idle", "idle_only"), ("normal", "normal"), ("high", "high"))]
     assert q.stats()["queue"] == {"high": 1, "normal": 1, "idle_only": 1} and q.stats()["running"]["id"] == first["id"]
+    s = q.stats()                                                   # the waiting list is in the order they run
+    assert [w["id"] for w in s["waiting"]] == ids[::-1] and [w["priority"] for w in s["waiting"]] == ["high", "normal", "idle_only"]
+    assert time.localtime(s["since"])[3:6] == (0, 0, 0) and time.strftime("%Y-%m-%d", time.localtime(s["since"])) == s["date"]
     gate.set()
     for i in ids:
         await finished(q, i)

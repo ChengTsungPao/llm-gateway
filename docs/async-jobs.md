@@ -10,7 +10,7 @@ Memory Hub's memory extraction. Code: `llm_gateway/jobs.py`; routes in `server.p
 | POST | `/v1/async/chat/completions` | Chat Completions body plus `priority`, `dedup_key`, `timeout_s`, `max_attempts`. Returns `202` with `job_id` and `status: queued` at once. |
 | GET | `/v1/jobs/{id}` | The job; `result` (the Chat Completions response) once `succeeded`. `404` if the job does not exist: treat it as lost and submit again. |
 | GET | `/v1/jobs` | List, newest first. Filters: `status=suspended,failed`, `priority`, `key_prefix`, `limit`. |
-| GET | `/v1/jobs/stats` | `today_requests`, `today_success`, `today_failed`, queued per priority, the running job, dead letters. Also in `/api/status` as `jobs`. |
+| GET | `/v1/jobs/stats` | `today_requests`, `today_success`, `today_failed` (counted from `since`, the gateway's local midnight), queued per priority, `waiting` (up to 20 queued jobs in run order), the running job, dead letters. Also in `/api/status` as `jobs`. |
 | POST | `/v1/jobs/{id}/resume` | Run a `suspended` or `failed` job again (attempts start over). |
 | DELETE | `/v1/jobs/{id}` | Discard a job for good (not while it runs). |
 
@@ -41,5 +41,8 @@ Memory Hub's memory extraction. Code: `llm_gateway/jobs.py`; routes in `server.p
 
 ## UI
 
-The Models page shows today's numbers, the queue and the running job as cards (a row on desktop, a
-column on phones), and lists the dead letters with **Resume** and **Discard** (asks once to confirm).
+The Models page shows today's requests, successes, failures and queued jobs as one row of cards, with
+the time the counts start from (the gateway's midnight: set `TZ` in `.env`, e.g. `TZ=Asia/Taipei`, or
+it is UTC midnight in Docker). Queued background jobs are listed under the running job in the
+Resources panel, in the order they will run. The dead letters are listed with **Resume** and
+**Discard** (asks once to confirm).

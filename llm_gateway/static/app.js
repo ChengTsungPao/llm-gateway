@@ -138,15 +138,21 @@ function renderJobs() {
   const j = status.jobs, board = $("#jbBoard");
   board.hidden = !j;
   if (!j) return;
-  const q = j.queue, queued = q.high + q.normal + q.idle_only, run = j.running;
+  // a job whose model is loading is still "queued" in jobs.py, but the top of the page shows it as Running
+  const q = j.queue, loading = (j.waiting || []).some((w) => w.id === status.running?.request_id);
+  const queued = q.high + q.normal + q.idle_only - (loading ? 1 : 0);
   const dead = j.suspended + j.failed;
   const card = (k, v, sub = "", cls = "") => `<div class="jb-card ${cls}"><span class="jb-k">${k}</span><span class="jb-v">${v}</span>${sub ? `<small>${sub}</small>` : ""}</div>`;
+  // the counters run from the gateway's local midnight; say when that was in the viewer's time
+  const since = new Date((j.since ?? 0) * 1000), midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const hhmm = since.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("#jbSince").textContent = "Background jobs since " +
+    (since.getTime() === midnight.getTime() ? "00:00 today" : `${since.toLocaleDateString()} ${hhmm}`);
   $("#jbCards").innerHTML = [
-    card("Requests today", j.today_requests),
+    card("Requests", j.today_requests),
     card("Succeeded", j.today_success, "", j.today_success ? "ok" : ""),
-    card("Failed", j.today_failed, dead ? `${dead} waiting in dead letters` : "", j.today_failed ? "bad" : ""),
-    card("Queued", queued, `high ${q.high} · normal ${q.normal} · idle ${q.idle_only}${j.waiting_retry ? ` · ${j.waiting_retry} retrying` : ""}`),
-    card("Running", run ? esc(prof(run.model)?.name || run.model) : "—", run ? `${run.priority} · attempt ${run.attempts + 1}` : "no background job", run ? "run" : ""),
+    card("Failed", j.today_failed, dead ? `${dead} dead` : "", j.today_failed ? "bad" : ""),
+    card("Queued", queued, j.waiting_retry ? `${j.waiting_retry} retrying` : ""),
   ].join("");
   $("#jbDeadN").textContent = String(dead);
   $("#jbDeadN").classList.toggle("bad", dead > 0);
@@ -208,11 +214,18 @@ function renderResources() {
     <span class="res-k">${m.k}</span><span class="res-v">${m.v}</span>
     <span class="meter"><span class="meter-fill${m.pct >= 90 ? " hot" : ""}" style="width:${Math.min(100, m.pct).toFixed(0)}%"></span></span></div>`).join("")
     + (onModels ? renderQueue() : "");
-  const n = onModels ? (status.queue?.length || 0) + (status.tasks?.waiting?.length || 0) : 0;
+  const inQueue = gpuJobIds();
+  const bg = (status.jobs?.waiting || []).filter((b) => !inQueue.has(b.id)).length;
+  const n = onModels ? (status.queue?.length || 0) + (status.tasks?.waiting?.length || 0) + bg : 0;
   $("#resToggle").innerHTML = (open ? "Resources ▾" : "Resources ▸") +
     (n ? `<span class="badge" title="${n} waiting for the GPU or to start">${n}</span>` : "");
 }
 
+// Background jobs already holding or waiting for the GPU: the scheduler lists them itself. A job stays
+// "queued" in jobs.py until its model is loaded, so this keeps it from being shown twice.
+function gpuJobIds() {
+  return new Set([status.running, ...(status.queue || [])].filter(Boolean).map((x) => x.request_id));
+}
 // The GPU scheduler's state (manager.py + agent/dispatch.py), shown only in the Resources panel.
 function who(item) {
   const name = prof(item.model)?.name || item.model;
@@ -240,6 +253,13 @@ function jobRows() {
   }
   for (const w of waiting) {
     rows.push(`<li class="job"><span class="job-n">${++n}</span><span class="job-what">Agent “${esc(w.title)}”<small>task waiting to start · ${w.waiting_s}s</small></span></li>`);
+  }
+  // background jobs (jobs.py) not yet asking for the GPU, in the order they will run
+  const inQueue = gpuJobIds();
+  for (const b of status.jobs?.waiting || []) {
+    if (inQueue.has(b.id)) continue;
+    const when = b.retry_in_s ? `retry in ${b.retry_in_s}s` : b.priority === "idle_only" ? "runs when the GPU is idle" : `waiting ${b.waiting_s}s`;
+    rows.push(`<li class="job"><span class="job-n">${++n}</span><span class="job-what">Background job · ${esc(prof(b.model)?.name || b.model)}<small>${esc(b.priority)} · ${when}</small></span></li>`);
   }
   return rows.join("");
 }
