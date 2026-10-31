@@ -109,6 +109,27 @@ async def _stopped():
     return "none"
 
 
+async def test_info_notices_kubernetes_switched_off_and_on(tmp_path, monkeypatch):
+    host = PodHost(K8sConfig(agents_dir=tmp_path / "agents"), {}, "default")
+    cluster = {"on": True}
+
+    async def ensure_namespace():
+        if not cluster["on"]:
+            raise HostError(502, "kubectl apply failed: connection refused")
+    monkeypatch.setattr(host.pods, "ensure_namespace", ensure_namespace)
+    monkeypatch.setattr(host.proxy, "start", lambda: setattr(host.proxy, "url", "http://kube-proxy"))
+    host.client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda req: httpx.Response(200 if cluster["on"] else 503)))
+
+    assert (await host.info())["available"] is True
+    cluster["on"] = False                                   # switched off while the gateway runs
+    info = await host.info()
+    assert info["available"] is False and "Kubernetes is not available" in info["error"]
+    cluster["on"] = True                                    # and on again: no gateway restart needed
+    assert (await host.info()) | {"agents_dir": ""} == {"sandbox": "k8s", "agents_dir": "", "namespace": "llm-agents",
+                                                        "available": True, "error": ""}
+
+
 def test_pod_shares_skills_and_agents_md_read_only(tmp_path):
     from llm_gateway.agent.context import read_memory
     from llm_gateway.agent.skills import discover_skills
