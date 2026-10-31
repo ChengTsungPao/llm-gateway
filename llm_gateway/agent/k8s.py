@@ -114,7 +114,9 @@ class PodManager:
 
     async def ensure_namespace(self) -> None:
         ns = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": self.cfg.namespace}}
-        await Kubectl(self.cfg.kube_context, "default").run("apply", "-f", "-", stdin=json.dumps(ns))
+        # bounded, so a switched-off Kubernetes answers the agent page quickly instead of hanging it
+        await Kubectl(self.cfg.kube_context, "default").run("apply", "--request-timeout=5s", "-f", "-",
+                                                            stdin=json.dumps(ns))
 
     async def status(self, agent_id: str) -> str:
         """'ready', 'starting', 'failed: <reason>' or 'none'."""
@@ -200,10 +202,21 @@ class PodHost:
         try:
             self.cfg.agents_dir.mkdir(parents=True, exist_ok=True)
             await self.pods.ensure_namespace()
+            self.proxy.stop()       # a proxy left from before Kubernetes was switched off
             self.proxy.start()
             self.started, self.error = True, ""
         except (HostError, RuntimeError, OSError) as e:
             self.error = f"Kubernetes is not available ({getattr(e, 'message', e)}). Is Kubernetes enabled in Docker Desktop?"
+
+    async def _check(self) -> None:
+        """Notice Kubernetes being switched off or on while the gateway runs (the agent page asks on load)."""
+        if self.started:
+            try:
+                (await self.client.get(f"{self.proxy.url}/version", timeout=5)).raise_for_status()
+                return
+            except httpx.HTTPError:
+                self.started = False
+        await self.start()
 
     async def close(self) -> None:
         self.proxy.stop()
@@ -250,8 +263,9 @@ class PodHost:
     # ── AgentHost ─────────────────────────────────────────────────────────
 
     async def info(self) -> dict:
+        await self._check()
         return {"sandbox": self.kind, "agents_dir": str(self.cfg.agents_dir), "namespace": self.cfg.namespace,
-                "error": self.error}
+                "available": self.started, "error": self.error}
 
     async def list(self) -> list[dict]:
         out = []

@@ -53,7 +53,16 @@ async function agInit() {
   $("#agMode").value = store.get("agMode", ag.info.default_mode);
   agRenderRoots();
   for (const err of ag.info.mcp_errors) banner(err);
-  if (ag.info.error) banner(ag.info.error);
+  if (ag.info.available === false) {
+    // Kubernetes is switched off (e.g. in Docker Desktop to save memory): no pods, so no new turns.
+    // Past tasks stay readable from their saved checkpoints.
+    agEmpty(`<p class="notice error"><b>The agent is turned off.</b> Agents run in Kubernetes pods and Kubernetes is
+      not running. Turn it on in Docker Desktop → Settings → Kubernetes, then reload this page. Past tasks can still be read.</p>
+      <p class="notice">${esc(ag.info.error)}</p>`);
+    $("#agComposer").hidden = true; $("#agWorkspaceRow").hidden = true; $("#agNew").hidden = true;
+    await agLoadSessions();
+    return;
+  }
   await agLoadSessions();
   const last = store.get("agSession", null);
   if (last && ag.sessions.some((s) => s.id === last)) await agOpen(last);
