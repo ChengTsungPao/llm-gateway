@@ -345,3 +345,26 @@ def test_http_errors(tmp_path):
     assert c.post("/v1/async/chat/completions", json={"model": "nope", "messages": []}).status_code == 404
     assert c.post("/v1/async/chat/completions",
                   json={"model": "a", "messages": [], "priority": "urgent"}).status_code == 400
+
+
+async def test_dedup_cache_hit_counts_request_and_cache(tmp_path):
+    async def runner(job, mark_running):
+        mark_running()
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    q = make(tmp_path, runner)
+    q.start()
+    a = q.submit({}, model="m", dedup_key="cache-test")
+    await finished(q, a["id"])
+    s1 = q.stats()
+    assert s1["today_requests"] == 1 and s1["today_success"] == 1 and s1["today_cached"] == 0
+
+    # Submit again with same dedup_key: returns succeeded job as cache hit
+    b = q.submit({}, model="m", dedup_key="cache-test")
+    assert b["id"] == a["id"] and b["status"] == "succeeded"
+    s2 = q.stats()
+    assert s2["today_requests"] == 2      # Request includes cache
+    assert s2["today_cached"] == 1        # cache genuinely counted
+    assert s2["today_success"] == 2       # cache hit counts as success too
+    assert s2["today_requests"] >= s2["today_success"]
+    await q.close()

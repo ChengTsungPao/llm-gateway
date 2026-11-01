@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, priority, created);
 CREATE TABLE IF NOT EXISTS daily (day TEXT PRIMARY KEY, requests INTEGER NOT NULL DEFAULT 0,
-                                  success INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0);
+                                  success INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+                                  cached INTEGER NOT NULL DEFAULT 0);
 -- what happened to dead letters (dead_letter, resumed, recovered, discarded); kept after the job is deleted
 CREATE TABLE IF NOT EXISTS job_events (at REAL NOT NULL, job_id TEXT NOT NULL, dedup_key TEXT,
                                        event TEXT NOT NULL, detail TEXT);
@@ -109,6 +110,9 @@ class JobQueue:
         for column, decl in MIGRATIONS.items():
             if column not in have:
                 self._db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {decl}")
+        have_daily = {r["name"] for r in self._db.execute("PRAGMA table_info(daily)")}
+        if "cached" not in have_daily:
+            self._db.execute("ALTER TABLE daily ADD COLUMN cached INTEGER NOT NULL DEFAULT 0")
         self.runner, self.is_idle = runner, is_idle
         self.max_attempts, self.backoff_base_s, self.backoff_cap_s = max_attempts, backoff_base_s, backoff_cap_s
         self.timeout_s, self.poll_s, self.keep_days = timeout_s, poll_s, keep_days
@@ -148,6 +152,9 @@ class JobQueue:
             row = self._row_by_key(dedup_key) if dedup_key else None
             if row is not None:
                 if row["status"] not in ("failed", "discarded"):
+                    if row["status"] == "succeeded":
+                        self._bump("cached")
+                        self._bump("success")
                     return self._view(row)          # the same work again: hand back the job that exists
                 # a failed (fatal) job submitted again is a retry the caller asks for; a discarded one is
                 # the user's decision to drop that work, and stays dropped
@@ -219,7 +226,7 @@ class JobQueue:
     def stats(self) -> dict:
         day = time.strftime("%Y-%m-%d")
         with self._lock:
-            d = self._db.execute("SELECT requests, success, failed FROM daily WHERE day=?", (day,)).fetchone()
+            d = self._db.execute("SELECT requests, success, failed, cached FROM daily WHERE day=?", (day,)).fetchone()
             counts = {(r["status"], r["priority"]): r["n"] for r in self._db.execute(
                 "SELECT status, priority, COUNT(*) AS n FROM jobs GROUP BY status, priority")}
             running = self._db.execute("SELECT * FROM jobs WHERE status='running' LIMIT 1").fetchone()
@@ -239,9 +246,10 @@ class JobQueue:
             "date": day,
             "since": time.mktime(time.strptime(day, "%Y-%m-%d")),   # the counters cover local midnight → now
             "waiting": waiting,
-            "today_requests": d["requests"] if d else 0,
+            "today_requests": (d["requests"] + (d["cached"] or 0)) if d else 0,
             "today_success": d["success"] if d else 0,
             "today_failed": d["failed"] if d else 0,
+            "today_cached": d["cached"] if d else 0,
             "queue": {p: counts.get(("queued", p), 0) for p in PRIORITIES},
             "waiting_retry": waiting_retry,
             "running": running_view,

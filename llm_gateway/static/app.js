@@ -153,7 +153,7 @@ function renderJobs() {
     (since.getTime() === midnight.getTime() ? "00:00 today" : `${since.toLocaleDateString()} ${hhmm}`);
   $("#jbCards").innerHTML = [
     card("Requests", j.today_requests),
-    card("Succeeded", j.today_success, "", j.today_success ? "ok" : ""),
+    card("Succeeded", j.today_success, `${j.today_cached ?? 0} cache`, j.today_success ? "ok" : ""),
     card("Failed", j.today_failed, dead ? `${dead} dead` : "", j.today_failed ? "bad" : ""),
     card("Queued", queued, queuedSub),
   ].join("");
