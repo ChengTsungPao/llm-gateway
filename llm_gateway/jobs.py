@@ -223,6 +223,18 @@ class JobQueue:
             self._event(row, "discarded", f"was {row['status']}")   # a dropped dead letter stays counted as failed
             return self._view(self._row(job_id))
 
+    def record_request(self) -> None:
+        with self._lock:
+            self._bump("requests")
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._bump("success")
+
+    def record_failed(self) -> None:
+        with self._lock:
+            self._bump("failed")
+
     def stats(self) -> dict:
         day = time.strftime("%Y-%m-%d")
         with self._lock:

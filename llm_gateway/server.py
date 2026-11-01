@@ -293,21 +293,32 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/v1/chat/completions", dependencies=[Depends(require_key)])
     async def chat_completions(body: dict, request: Request):
-        model_id = body.get("model") or manager.active_id
-        if not model_id:
-            raise HTTPException(400, "no 'model' given and no model is active")
-        profile = profile_or_404(model_id)
-        who = caller(request)
+        jobs.record_request()
+        try:
+            model_id = body.get("model") or manager.active_id
+            if not model_id:
+                raise HTTPException(400, "no 'model' given and no model is active")
+            profile = profile_or_404(model_id)
+            who = caller(request)
+        except Exception:
+            jobs.record_failed()
+            raise
 
         if not body.get("stream"):
             try:
                 async with manager.use(profile.id, **who) as backend:
                     body, info = await fit_context(backend, profile, body)
                     d = await backend.chat(body)
+                jobs.record_success()
             except ModelBusy as e:
+                jobs.record_failed()
                 raise HTTPException(409, str(e)) from e
             except BackendError as e:
+                jobs.record_failed()
                 raise HTTPException(502, str(e)) from e
+            except Exception:
+                jobs.record_failed()
+                raise
             if info:
                 d["llm_gateway"] = info
             return JSONResponse(d, headers={"X-LLM-Gateway-Compacted": str(info["compacted_messages"])} if info else None)
@@ -327,10 +338,15 @@ def create_app(cfg: Config) -> FastAPI:
             try:
                 async for piece in with_heartbeat(answer(), queue_beat(who["request_id"]), every_s=2):
                     yield piece
+                jobs.record_success()
             except (BackendError, ModelBusy) as e:
+                jobs.record_failed()
                 err = {"message": str(e), "code": "model_busy" if isinstance(e, ModelBusy) else "backend_error"}
                 yield f"data: {json.dumps({'error': err}, ensure_ascii=False)}\n\n".encode()
                 yield b"data: [DONE]\n\n"
+            except Exception:
+                jobs.record_failed()
+                raise
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -363,22 +379,35 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/v1/messages", dependencies=[Depends(require_key)])
     async def messages(body: dict, request: Request):
-        profile = protocol_profile(body.get("model"))
-        if profile is None:
-            return anthropic_error(404, "not_found_error", f"unknown model '{body.get('model')}'. "
-                                   f"Set ANTHROPIC_MODEL to one of: {model_list}")
-        chat = anthropic.to_chat(body, profile.id)
-        size = prompt_size(chat)
-        log.info("anthropic /v1/messages model=%s ~%d prompt tokens, %d messages, %d tools, stream=%s",
-                 profile.id, size, len(chat["messages"]), len(chat.get("tools", [])), bool(body.get("stream")))
-        who = caller(request)
+        jobs.record_request()
+        try:
+            profile = protocol_profile(body.get("model"))
+            if profile is None:
+                jobs.record_failed()
+                return anthropic_error(404, "not_found_error", f"unknown model '{body.get('model')}'. "
+                                       f"Set ANTHROPIC_MODEL to one of: {model_list}")
+            chat = anthropic.to_chat(body, profile.id)
+            size = prompt_size(chat)
+            log.info("anthropic /v1/messages model=%s ~%d prompt tokens, %d messages, %d tools, stream=%s",
+                     profile.id, size, len(chat["messages"]), len(chat.get("tools", [])), bool(body.get("stream")))
+            who = caller(request)
+        except Exception:
+            jobs.record_failed()
+            raise
         if not body.get("stream"):
             try:
-                return anthropic.from_chat(await run_chat(profile, chat, who), profile.id, size)
+                res = anthropic.from_chat(await run_chat(profile, chat, who), profile.id, size)
+                jobs.record_success()
+                return res
             except ModelBusy as e:      # waited too long in the queue; Claude Code retries 529
+                jobs.record_failed()
                 return anthropic_error(529, "overloaded_error", str(e))
             except BackendError as e:
+                jobs.record_failed()
                 return anthropic_error(500, "api_error", str(e))
+            except Exception:
+                jobs.record_failed()
+                raise
 
         async def gen():
             yield anthropic.message_start(profile.id, size)       # at once, even while the model loads
@@ -386,9 +415,14 @@ def create_app(cfg: Config) -> FastAPI:
                 frames = anthropic.stream(stream_events(stream_chat(profile, chat, who)), size)
                 async for frame in with_heartbeat(frames, anthropic.PING):
                     yield frame
+                jobs.record_success()
             except (BackendError, ModelBusy) as e:
+                jobs.record_failed()
                 kind = "overloaded_error" if isinstance(e, ModelBusy) else "api_error"
                 yield sse("error", anthropic.error_body(kind, str(e)))
+            except Exception:
+                jobs.record_failed()
+                raise
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=sse_headers)
 
@@ -398,24 +432,36 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/v1/responses", dependencies=[Depends(require_key)])
     async def responses_api(body: dict, request: Request):
-        if body.get("previous_response_id"):
-            raise HTTPException(400, "previous_response_id is not supported: send the full input (store=false)")
-        profile = protocol_profile(body.get("model"))
-        if profile is None:
-            raise HTTPException(404, f"unknown model '{body.get('model')}'. Use one of: {model_list}")
-        chat = responses.to_chat(body, profile.id)
-        kinds = responses.tool_kinds(body)
-        size = prompt_size(chat)
-        log.info("responses /v1/responses model=%s ~%d prompt tokens, %d items, %d tools, stream=%s",
-                 profile.id, size, len(body.get("input") or []), len(chat.get("tools", [])), bool(body.get("stream")))
-        who = caller(request)
+        jobs.record_request()
+        try:
+            if body.get("previous_response_id"):
+                raise HTTPException(400, "previous_response_id is not supported: send the full input (store=false)")
+            profile = protocol_profile(body.get("model"))
+            if profile is None:
+                raise HTTPException(404, f"unknown model '{body.get('model')}'. Use one of: {model_list}")
+            chat = responses.to_chat(body, profile.id)
+            kinds = responses.tool_kinds(body)
+            size = prompt_size(chat)
+            log.info("responses /v1/responses model=%s ~%d prompt tokens, %d items, %d tools, stream=%s",
+                     profile.id, size, len(body.get("input") or []), len(chat.get("tools", [])), bool(body.get("stream")))
+            who = caller(request)
+        except Exception:
+            jobs.record_failed()
+            raise
         if not body.get("stream"):
             try:
-                return responses.from_chat(await run_chat(profile, chat, who), profile.id, kinds, size)
+                res = responses.from_chat(await run_chat(profile, chat, who), profile.id, kinds, size)
+                jobs.record_success()
+                return res
             except ModelBusy as e:
+                jobs.record_failed()
                 raise HTTPException(409, str(e)) from e
             except BackendError as e:
+                jobs.record_failed()
                 raise HTTPException(502, str(e)) from e
+            except Exception:
+                jobs.record_failed()
+                raise
 
         writer = responses.StreamWriter(profile.id, kinds, size)
 
@@ -426,8 +472,13 @@ def create_app(cfg: Config) -> FastAPI:
                 frames = writer.stream(stream_events(stream_chat(profile, chat, who)))
                 async for frame in with_heartbeat(frames, queue_beat(who["request_id"])):
                     yield frame
+                jobs.record_success()
             except (BackendError, ModelBusy) as e:
+                jobs.record_failed()
                 yield writer.failed(str(e), "model_busy" if isinstance(e, ModelBusy) else "server_error")
+            except Exception:
+                jobs.record_failed()
+                raise
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=sse_headers)
 

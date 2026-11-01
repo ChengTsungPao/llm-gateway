@@ -368,3 +368,32 @@ async def test_dedup_cache_hit_counts_request_and_cache(tmp_path):
     assert s2["today_success"] == 2       # cache hit counts as success too
     assert s2["today_requests"] >= s2["today_success"]
     await q.close()
+
+
+def test_job_queue_record_methods(tmp_path):
+    q = make(tmp_path, lambda j, mr: OK)
+    s0 = q.stats()
+    assert s0["today_requests"] == 0 and s0["today_success"] == 0 and s0["today_failed"] == 0
+
+    q.record_request()
+    assert q.stats()["today_requests"] == 1
+
+    q.record_success()
+    assert q.stats()["today_success"] == 1
+
+    q.record_failed()
+    assert q.stats()["today_failed"] == 1
+
+
+def test_api_chat_completions_tracked_in_stats(tmp_path):
+    c = app_client(tmp_path)
+    s0 = c.get("/v1/jobs/stats").json()
+    assert s0["today_requests"] == 0 and s0["today_failed"] == 0
+
+    # Failed request with invalid model
+    r = c.post("/v1/chat/completions", json={"model": "non-existent", "messages": []})
+    assert r.status_code == 404
+    s1 = c.get("/v1/jobs/stats").json()
+    assert s1["today_requests"] == 1
+    assert s1["today_failed"] == 1
+

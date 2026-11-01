@@ -139,9 +139,14 @@ function renderJobs() {
   board.hidden = !j;
   if (!j) return;
   // the job queue: queued jobs (one whose model is loading included) plus the one generating
-  const q = j.queue, active = j.running ? 1 : 0;
-  const queued = q.high + q.normal + q.idle_only + active;
-  const running = active + ((j.waiting || []).some((w) => w.id === status.running?.request_id) ? 1 : 0);
+  const inGpu = gpuJobIds();
+  const bgWaiting = (j.waiting || []).filter((w) => !inGpu.has(w.id)).length;
+  const gpuQueued = (status.queue || []).length;
+  const agentWaiting = (status.tasks?.waiting || []).length;
+  const gpuRunning = status.running ? 1 : 0;
+  const bgRunning = (j.running && status.running?.request_id !== j.running.id) ? 1 : 0;
+  const running = gpuRunning + bgRunning;
+  const queued = running + gpuQueued + agentWaiting + bgWaiting;
   const queuedSub = [running ? `${running} running` : "",
     j.waiting_retry ? `${j.waiting_retry} retrying` : ""].filter(Boolean).join(" · ");
   const dead = j.suspended + j.failed;
@@ -149,7 +154,7 @@ function renderJobs() {
   // the counters run from the gateway's local midnight; say when that was in the viewer's time
   const since = new Date((j.since ?? 0) * 1000), midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const hhmm = since.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("#jbSince").textContent = "Background jobs since " +
+  $("#jbSince").textContent = "Requests and jobs since " +
     (since.getTime() === midnight.getTime() ? "00:00 today" : `${since.toLocaleDateString()} ${hhmm}`);
   $("#jbCards").innerHTML = [
     card("Requests", j.today_requests),
